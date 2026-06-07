@@ -18,9 +18,12 @@ const orderSchema = new mongoose.Schema({
   platformFee: { type: Number, default: 0 },
   status: {
     type: String,
-    enum: ["pending", "confirmed", "processing", "assigned", "picked_up", "in_transit", "delivered", "cancelled"],
+    enum: ["pending", "prebooked", "confirmed", "processing", "assigned", "picked_up", "in_transit", "delivered", "cancelled"],
     default: "pending"
   },
+  isPrebooked: { type: Boolean, default: false },
+  pointsEarned: { type: Number, default: 0 },
+  pointsUsed: { type: Number, default: 0 },
   paymentMode: { type: String, enum: ["cod", "upi", "card", "wallet", "online"], default: "cod" },
   paymentStatus: { type: String, enum: ["pending", "paid", "refunded"], default: "pending" },
   deliveryAddress: { type: String, default: "" },

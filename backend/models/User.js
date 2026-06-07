@@ -18,6 +18,8 @@ const userSchema = new mongoose.Schema({
   aadhaar: { type: String, default: "" },
   isVerified: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
+  rewardPoints: { type: Number, default: 0 },
+  experiencePoints: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 

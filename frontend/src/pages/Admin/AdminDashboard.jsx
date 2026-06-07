@@ -23,7 +23,7 @@ export default function AdminDashboard() {
   const [msg, setMsg] = useState({ type:"", text:"" });
   const [assignModal, setAssignModal] = useState(null);
   const [search, setSearch] = useState("");
-  const { listening, interim, startListening } = useVoiceInput(lang || "en");
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang || "en");
 
   useEffect(() => {
     loadAll();
@@ -123,8 +123,8 @@ export default function AdminDashboard() {
                onSpeak={() => startListening((val) => {
                  if (typeof val === "function") setSearch(f=>val(f));
                  else setSearch(val);
-               }, { replace: true })}
-               listening={listening}
+               }, { replace: true, fieldId: "search" })}
+               listening={listening && activeField === "search"}
                interim={interim}
             />
           </div>

@@ -5,15 +5,16 @@ import { useAuth } from "../../context/AuthContext";
 import { useLang } from "../../context/LangContext";
 import { useVoiceInput } from "../../utils/useVoiceInput";
 import AutoSuggestInput from "../../components/AutoSuggestInput";
+import { parseSpokenNumber } from "../../utils/voiceParser";
 
 const SOIL_TYPES = ["loamy", "clay", "sandy", "silt", "peat", "chalk", "other"];
-const LANGUAGES = [{ v: "en", l: "English" }, { v: "te", l: "తెలుగు" }, { v: "hi", l: "हिंदी" }];
+const LANGUAGES = [{ v: "en", l: "English" }, { v: "te", l: "తెలుగు" }, { v: "hi", l: "हिंदी" }, { v: "kn", l: "ಕನ್ನಡ" }, { v: "ta", l: "தமிழ்" }];
 
 export default function Register() {
   const { login } = useAuth();
   const { t, lang } = useLang();
   const navigate = useNavigate();
-  const { listening, interim, startListening } = useVoiceInput(lang);
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang);
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -40,12 +41,17 @@ export default function Register() {
   };
 
   const speak = (field) => startListening((val) => {
+    const isNumeric = ["phone", "pincode", "aadhaar", "farmSize", "experience"].includes(field);
     if (typeof val === "function") {
-      setForm((f) => ({ ...f, [field]: val(f[field]) }));
+      setForm((f) => {
+        const prev = f[field];
+        const newVal = val(prev);
+        return { ...f, [field]: isNumeric ? parseSpokenNumber(newVal) : newVal };
+      });
     } else {
-      setForm((f) => ({ ...f, [field]: val }));
+      setForm((f) => ({ ...f, [field]: isNumeric ? parseSpokenNumber(val) : val }));
     }
-  });
+  }, { fieldId: field });
 
   const getLocation = () => {
     if (!navigator.geolocation) { alert("Geolocation not supported"); return; }
@@ -121,19 +127,35 @@ export default function Register() {
             <>
               <h3 className="section-title">👤 Basic Information</h3>
 
-              <AutoSuggestInput value={form.name} onChange={set("name")} onSpeak={() => speak("name")} listening={listening} interim={interim} label={t("name")} placeholder="e.g. Ravi Kumar" fieldType="name" />
+              <AutoSuggestInput value={form.name} onChange={set("name")} onSpeak={() => speak("name")} listening={listening && activeField === "name"} interim={interim} label={t("name")} placeholder="e.g. Ravi Kumar" fieldType="name" />
               
               <div className="form-group">
                 <label className="field-label">{t("email")}</label>
                 <div className="input-wrapper">
-                  <input className="rs-input" type="email" placeholder="you@example.com" value={form.email} onChange={set("email")} />
+                  <input
+                    className="rs-input"
+                    type="email"
+                    placeholder="you@example.com"
+                    value={listening && activeField === "email" && interim ? `${form.email} ${interim}...` : form.email}
+                    onChange={set("email")}
+                    style={listening && activeField === "email" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                  />
+                  <button type="button" className={`mic-btn ${listening && activeField === "email" ? "active" : ""}`} onClick={() => speak("email")}>🎤</button>
                 </div>
               </div>
 
               <div className="form-group">
                 <label className="field-label">{t("phone")}</label>
                 <div className="input-wrapper">
-                  <input className="rs-input" type="tel" placeholder="+91 9876543210" value={form.phone} onChange={set("phone")} />
+                  <input
+                    className="rs-input"
+                    type="tel"
+                    placeholder="+91 9876543210"
+                    value={listening && activeField === "phone" && interim ? `${form.phone} ${interim}...` : form.phone}
+                    onChange={set("phone")}
+                    style={listening && activeField === "phone" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                  />
+                  <button type="button" className={`mic-btn ${listening && activeField === "phone" ? "active" : ""}`} onClick={() => speak("phone")}>🎤</button>
                 </div>
               </div>
 
@@ -217,8 +239,14 @@ export default function Register() {
                 <label className="field-label">{t("location")}</label>
                 <div style={{ display: "flex", gap: "0.6rem" }}>
                   <div className="input-wrapper" style={{ flex: 1 }}>
-                    <input className="rs-input" placeholder="Village / Town / City" value={form.location} onChange={set("location")} />
-                    <button type="button" className={`mic-btn ${listening ? "active" : ""}`} onClick={() => speak("location")}>🎤</button>
+                    <input
+                      className="rs-input"
+                      placeholder="Village / Town / City"
+                      value={listening && activeField === "location" && interim ? `${form.location} ${interim}...` : form.location}
+                      onChange={set("location")}
+                      style={listening && activeField === "location" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                    />
+                    <button type="button" className={`mic-btn ${listening && activeField === "location" ? "active" : ""}`} onClick={() => speak("location")}>🎤</button>
                   </div>
                   <button type="button" className="btn-icon" onClick={getLocation} disabled={locLoading} title="Auto-detect">
                     {locLoading ? "⏳" : "📍"}
@@ -231,16 +259,16 @@ export default function Register() {
                 )}
               </div>
 
-              <AutoSuggestInput value={form.address} onChange={set("address")} onSpeak={() => speak("address")} listening={listening} interim={interim} label={t("address")} placeholder="Full address" />
+              <AutoSuggestInput value={form.address} onChange={set("address")} onSpeak={() => speak("address")} listening={listening && activeField === "address"} interim={interim} label={t("address")} placeholder="Full address" />
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                <AutoSuggestInput value={form.pincode} onChange={set("pincode")} onSpeak={() => speak("pincode")} listening={listening} interim={interim} label="Pincode" placeholder="500001" />
-                <AutoSuggestInput value={form.city} onChange={set("city")} onSpeak={() => speak("city")} listening={listening} interim={interim} label="City" placeholder="City" fieldType="city" />
+                <AutoSuggestInput value={form.pincode} onChange={set("pincode")} onSpeak={() => speak("pincode")} listening={listening && activeField === "pincode"} interim={interim} label="Pincode" placeholder="500001" />
+                <AutoSuggestInput value={form.city} onChange={set("city")} onSpeak={() => speak("city")} listening={listening && activeField === "city"} interim={interim} label="City" placeholder="City" fieldType="city" />
               </div>
 
-              <AutoSuggestInput value={form.state} onChange={set("state")} onSpeak={() => speak("state")} listening={listening} interim={interim} label="State" placeholder="State" fieldType="state" />
+              <AutoSuggestInput value={form.state} onChange={set("state")} onSpeak={() => speak("state")} listening={listening && activeField === "state"} interim={interim} label="State" placeholder="State" fieldType="state" />
 
-              <AutoSuggestInput value={form.aadhaar} onChange={set("aadhaar")} onSpeak={() => speak("aadhaar")} listening={listening} interim={interim} label={t("aadhaar")} placeholder="XXXX-XXXX-XXXX" />
+              <AutoSuggestInput value={form.aadhaar} onChange={set("aadhaar")} onSpeak={() => speak("aadhaar")} listening={listening && activeField === "aadhaar"} interim={interim} label={t("aadhaar")} placeholder="XXXX-XXXX-XXXX" />
 
               <div style={{ display: "flex", gap: "0.75rem" }}>
                 <button className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
@@ -259,14 +287,20 @@ export default function Register() {
             <>
               <h3 className="section-title">🌾 Farm Details</h3>
 
-              <AutoSuggestInput value={form.farmName} onChange={set("farmName")} onSpeak={() => speak("farmName")} listening={listening} interim={interim} label={t("farmName")} placeholder="e.g. Sri Rama Farms" />
+              <AutoSuggestInput value={form.farmName} onChange={set("farmName")} onSpeak={() => speak("farmName")} listening={listening && activeField === "farmName"} interim={interim} label={t("farmName")} placeholder="e.g. Sri Rama Farms" />
               
               <div className="form-group">
                 <label className="field-label">Farm Location</label>
                 <div style={{ display: "flex", gap: "0.6rem" }}>
                   <div className="input-wrapper" style={{ flex: 1 }}>
-                    <input className="rs-input" placeholder="Village / District" value={form.farmLocation} onChange={set("farmLocation")} />
-                    <button type="button" className={`mic-btn ${listening ? "active" : ""}`} onClick={() => speak("farmLocation")}>🎤</button>
+                    <input
+                      className="rs-input"
+                      placeholder="Village / District"
+                      value={listening && activeField === "farmLocation" && interim ? `${form.farmLocation} ${interim}...` : form.farmLocation}
+                      onChange={set("farmLocation")}
+                      style={listening && activeField === "farmLocation" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                    />
+                    <button type="button" className={`mic-btn ${listening && activeField === "farmLocation" ? "active" : ""}`} onClick={() => speak("farmLocation")}>🎤</button>
                   </div>
                   <button type="button" className="btn-icon" onClick={() => {
                     if (!navigator.geolocation) { alert("Geolocation not supported"); return; }
@@ -290,13 +324,29 @@ export default function Register() {
                 <div className="form-group">
                   <label className="field-label">{t("farmSize")} (acres)</label>
                   <div className="input-wrapper">
-                    <input className="rs-input" type="number" placeholder="e.g. 5" value={form.farmSize} onChange={set("farmSize")} />
+                    <input
+                      className="rs-input"
+                      type="number"
+                      placeholder="e.g. 5"
+                      value={listening && activeField === "farmSize" && interim ? `${form.farmSize} ${interim}...` : form.farmSize}
+                      onChange={set("farmSize")}
+                      style={listening && activeField === "farmSize" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                    />
+                    <button type="button" className={`mic-btn ${listening && activeField === "farmSize" ? "active" : ""}`} onClick={() => speak("farmSize")}>🎤</button>
                   </div>
                 </div>
                 <div className="form-group">
                   <label className="field-label">{t("experience")} (years)</label>
                   <div className="input-wrapper">
-                    <input className="rs-input" type="number" placeholder="Years" value={form.experience} onChange={set("experience")} />
+                    <input
+                      className="rs-input"
+                      type="number"
+                      placeholder="Years"
+                      value={listening && activeField === "experience" && interim ? `${form.experience} ${interim}...` : form.experience}
+                      onChange={set("experience")}
+                      style={listening && activeField === "experience" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                    />
+                    <button type="button" className={`mic-btn ${listening && activeField === "experience" ? "active" : ""}`} onClick={() => speak("experience")}>🎤</button>
                   </div>
                 </div>
               </div>

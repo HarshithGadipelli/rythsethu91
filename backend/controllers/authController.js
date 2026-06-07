@@ -80,7 +80,8 @@ export const register = async (req, res) => {
         _id: user._id, name: user.name, email: user.email,
         role: user.role, phone: user.phone, language: user.language,
         location: user.location, latitude: user.latitude,
-        longitude: user.longitude, isVerified: user.isVerified
+        longitude: user.longitude, isVerified: user.isVerified,
+        rewardPoints: user.rewardPoints, experiencePoints: user.experiencePoints
       }
     });
   } catch (error) {
@@ -113,7 +114,8 @@ export const login = async (req, res) => {
         _id: user._id, name: user.name, email: user.email,
         role: user.role, phone: user.phone, language: user.language,
         location: user.location, latitude: user.latitude,
-        longitude: user.longitude, isVerified: user.isVerified
+        longitude: user.longitude, isVerified: user.isVerified,
+        rewardPoints: user.rewardPoints, experiencePoints: user.experiencePoints
       },
       profile
     });

@@ -10,6 +10,7 @@ import FarmerDashboard from "./pages/Farmer/FarmerDashboard";
 import AgentDashboard from "./pages/Agent/AgentDashboard";
 import AdminDashboard from "./pages/Admin/AdminDashboard";
 import Marketplace from "./pages/Marketplace/Marketplace";
+import AIAssistant from "./components/AIAssistant";
 
 // Protected route wrapper
 function Protected({ children, roles }) {
@@ -43,6 +44,7 @@ function AppRoutes() {
         <div className="leaf-petal"></div>
       </div>
       <Navbar />
+      <AIAssistant />
       <Routes>
         <Route path="/"           element={<LandingPage />} />
         <Route path="/login"      element={<Login />} />

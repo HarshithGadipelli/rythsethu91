@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useAutoSuggest } from "../utils/useAutoSuggest";
 
 export default function AutoSuggestInput({
-  value, onChange, onSpeak, listening, interim,
+  value, onChange, onSpeak, onFocus, onTTS, listening, interim,
   placeholder, type = "text", label, fieldType = "default",
   className = "rs-input", disabled = false
 }) {
@@ -32,6 +32,7 @@ export default function AutoSuggestInput({
           placeholder={placeholder}
           value={interim && listening ? `${value} ${interim}...` : value}
           onChange={handleChange}
+          onFocus={onFocus}
           onKeyDown={(e) => handleKeyDown(e, handleSelect)}
           onBlur={closeSuggestions}
           disabled={disabled}
@@ -46,6 +47,16 @@ export default function AutoSuggestInput({
             title={listening ? "Listening..." : "Speak"}
           >
             🎤
+          </button>
+        )}
+        {onTTS && (
+          <button
+            type="button"
+            className="tts-btn"
+            onClick={onTTS}
+            title="Read Aloud"
+          >
+            🔊
           </button>
         )}
       </div>

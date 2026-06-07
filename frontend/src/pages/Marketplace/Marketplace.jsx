@@ -8,6 +8,9 @@ import { useLang } from "../../context/LangContext";
 import { useVoiceInput } from "../../utils/useVoiceInput";
 import AutoSuggestInput from "../../components/AutoSuggestInput";
 import { io } from "socket.io-client";
+import { parseSpokenNumber } from "../../utils/voiceParser";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, Map as MapIcon, List, ShoppingBag, Truck, PackageCheck, Zap } from "lucide-react";
 
 // Fix leaflet default icons
 delete L.Icon.Default.prototype._getIconUrl;
@@ -17,10 +20,28 @@ L.Icon.Default.mergeOptions({
   shadowUrl:     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
 });
 
-const farmerIcon = new L.Icon({
-  iconUrl: "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png",
-  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
-  iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34],
+const farmerIcon = L.divIcon({
+  className: "custom-farmer-icon",
+  html: `<div style="
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 36px;
+    height: 36px;
+    background: linear-gradient(135deg, #2d7a4f, #1b4d3e);
+    border: 2px solid #ffffff;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+  ">
+    <div style="
+      transform: rotate(45deg);
+      font-size: 1.25rem;
+    ">🌾</div>
+  </div>`,
+  iconSize: [36, 36],
+  iconAnchor: [18, 36],
+  popupAnchor: [0, -36]
 });
 
 // Haversine distance calculation
@@ -38,8 +59,10 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 function FlyToMarker({ crop }) {
   const map = useMap();
   useEffect(() => {
-    if (crop?.latitude && crop?.longitude) {
-      map.flyTo([crop.latitude, crop.longitude], 12, { duration: 1.2 });
+    const lat = crop?.latitude || crop?.farmer?.latitude;
+    const lng = crop?.longitude || crop?.farmer?.longitude;
+    if (lat && lng) {
+      map.flyTo([lat, lng], 12, { duration: 1.2 });
     }
   }, [crop]);
   return null;
@@ -56,7 +79,7 @@ function MapInvalidator() {
 export default function Marketplace() {
   const { user } = useAuth();
   const { t, lang } = useLang();
-  const { listening, interim, startListening } = useVoiceInput(lang);
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang);
 
   const [crops, setCrops] = useState([]);
   const [filtered, setFiltered] = useState([]);
@@ -70,6 +93,7 @@ export default function Marketplace() {
   const [orderLng, setOrderLng] = useState(null);
   const [deliveryType, setDeliveryType] = useState("standard");
   const [paymentMethod, setPaymentMethod] = useState("cod");
+  const [usePoints, setUsePoints] = useState(false);
   const [loading, setLoading] = useState(true);
   const [ordering, setOrdering] = useState(false);
   const [msg, setMsg] = useState({ type:"", text:"" });
@@ -90,7 +114,22 @@ export default function Marketplace() {
     const socket = io("http://localhost:5000");
     socket.on("order_created", () => fetchCrops());
     socket.on("order_updated", () => { if (user) fetchMyOrders(); });
-    return () => socket.disconnect();
+
+    // AI Autofill Listener
+    const handleAIAutofill = (e) => {
+      if (e.detail.context === "marketplace_search" && e.detail.parsedData) {
+        const pd = e.detail.parsedData;
+        if (pd.searchQuery) setSearch(pd.searchQuery);
+        if (pd.category) setCategory(pd.category);
+        setViewTab("list"); // Ensure they see the results
+      }
+    };
+    window.addEventListener("ai_autofill", handleAIAutofill);
+
+    return () => {
+      socket.disconnect();
+      window.removeEventListener("ai_autofill", handleAIAutofill);
+    };
   }, []);
 
   useEffect(() => {
@@ -118,12 +157,17 @@ export default function Marketplace() {
   };
 
   // Calculate delivery distance and charges
+  const cropLat = selected?.latitude || selected?.farmer?.latitude;
+  const cropLng = selected?.longitude || selected?.farmer?.longitude;
   const deliveryDistance = selected ? haversineDistance(
-    selected.latitude, selected.longitude, orderLat, orderLng
+    cropLat, cropLng, orderLat, orderLng
   ) : 0;
   const deliveryCharges = deliveryType === "farm_pickup" ? 0 : Math.round(DELIVERY_BASE + (deliveryDistance * DELIVERY_PER_KM));
   const subtotal = selected ? selected.price * orderQty : 0;
-  const totalAmount = subtotal + deliveryCharges;
+  const totalBeforeDiscount = subtotal + deliveryCharges;
+  const maxPoints = Math.min(user?.rewardPoints || 0, totalBeforeDiscount);
+  const pointsDiscount = usePoints ? maxPoints : 0;
+  const totalAmount = totalBeforeDiscount - pointsDiscount;
 
   const openCrop = async (crop) => {
     setSelected(crop);
@@ -131,6 +175,7 @@ export default function Marketplace() {
     setNutrition(null);
     setOrderQty(1);
     setDeliveryType("standard");
+    setUsePoints(false);
     setShowBill(null);
     setMsg({ type:"", text:"" });
     setNutLoading(true);
@@ -214,6 +259,7 @@ export default function Marketplace() {
       totalAmount,
       subtotal,
       deliveryCharges,
+      pointsUsed: pointsDiscount,
       deliveryDistance: Math.round(deliveryDistance * 10) / 10,
       deliveryType,
       paymentMode: payMode,
@@ -233,6 +279,7 @@ export default function Marketplace() {
       subtotal,
       deliveryType,
       deliveryCharges,
+      pointsUsed: pointsDiscount,
       deliveryDistance: Math.round(deliveryDistance * 10) / 10,
       totalAmount,
       paymentMode: payMode,
@@ -248,161 +295,301 @@ export default function Marketplace() {
     setOrdering(false);
   };
 
-  const mapLocations = filtered.filter(c => c.latitude && c.longitude);
+  const mapLocations = filtered.filter(c => {
+    const lat = c.latitude || c.farmer?.latitude;
+    const lng = c.longitude || c.farmer?.longitude;
+    return lat !== undefined && lat !== null && lng !== undefined && lng !== null;
+  });
+
+  // Animation Variants
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: { staggerChildren: 0.1 }
+    }
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
+  };
 
   return (
-    <div className="page-wrapper" style={{ maxWidth:"100%", padding:"1.5rem" }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="page-wrapper" style={{ maxWidth:"100%", padding:"1.5rem" }}>
+      {/* Premium Hero Banner */}
+      <motion.div 
+        initial={{ y: -30, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+        className="marketplace-hero-banner" style={{
+        backgroundImage: "linear-gradient(135deg, rgba(22, 163, 74, 0.85), rgba(5, 150, 105, 0.95)), url('http://localhost:5000/uploads/hero.png')",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        borderRadius: "var(--radius-lg)",
+        padding: "3.5rem 2.5rem",
+        marginBottom: "2.5rem",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        boxShadow: "0 15px 35px -5px rgba(22, 163, 74, 0.2)",
+        position: "relative",
+        overflow: "hidden"
+      }}>
+        <motion.span 
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          style={{ 
+          background: "rgba(255, 255, 255, 0.2)", 
+          color: "white", 
+          padding: "0.4rem 1rem", 
+          borderRadius: "100px", 
+          fontSize: "0.85rem", 
+          fontWeight: 700, 
+          textTransform: "uppercase", 
+          letterSpacing: "0.1em", 
+          marginBottom: "1rem", 
+          backdropFilter: "blur(8px)",
+          border: "1px solid rgba(255, 255, 255, 0.4)",
+          display: "flex", alignItems: "center", gap: "0.5rem"
+        }}>
+          <Zap size={16} fill="white" /> {t("tagline")}
+        </motion.span>
+        <motion.h2 
+          initial={{ x: -20, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          transition={{ delay: 0.3 }}
+          style={{ color: "white", fontSize: "2.5rem", fontWeight: 800, margin: "0 0 0.5rem", fontFamily: "'Outfit', sans-serif" }}>
+          Freshness Delivered.
+        </motion.h2>
+        <motion.p 
+          initial={{ x: -20, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          transition={{ delay: 0.4 }}
+          style={{ color: "rgba(255,255,255,0.9)", fontSize: "1.1rem", maxWidth: "600px", margin: 0, lineHeight: 1.6 }}>
+          Explore high-quality organic crops directly sourced from local farmers. Switch to Map view to pinpoint farms near you!
+        </motion.p>
+      </motion.div>
+
       <div className="flex-between mb-3">
         <div>
-          <h1 className="page-title" style={{ textAlign:"left", fontSize:"1.8rem" }}>🛒 {t("marketplace")}</h1>
-          <p style={{ color:"var(--green-pale)", fontSize:"0.85rem" }}>{filtered.length} fresh products from local farmers</p>
+          <h1 className="page-title" style={{ textAlign:"left", fontSize:"1.8rem", color:"var(--text-dark)", backgroundImage:"none", WebkitTextFillColor:"var(--text-dark)", textShadow:"none" }}>
+            🛒 {t("marketplace")}
+          </h1>
+          <p style={{ color:"var(--text-muted)", fontSize:"0.95rem" }}>{filtered.length} fresh products from local farmers</p>
         </div>
         <div style={{ display:"flex", gap:"0.75rem", alignItems:"center" }}>
           {user && (
-            <button className={`btn-secondary`} onClick={() => setShowOrders(!showOrders)}>
-              📦 My Orders ({myOrders.length})
-            </button>
+            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={`btn-secondary`} onClick={() => setShowOrders(!showOrders)} style={{ background:"white", color:"var(--text-dark)", borderColor:"#e2e8f0" }}>
+              <PackageCheck size={18} style={{ marginRight:4 }} /> {t("myOrders")} ({myOrders.length})
+            </motion.button>
           )}
-          <div className="tab-bar" style={{ margin:0 }}>
-            <button className={`tab-btn ${viewTab==="list"?"active":""}`} onClick={() => setViewTab("list")}>📋 List</button>
-            <button className={`tab-btn ${viewTab==="map"?"active":""}`} onClick={() => setViewTab("map")}>🗺️ Map</button>
+          <div className="tab-bar" style={{ margin:0, background:"white", border:"1px solid #e2e8f0", padding:4, borderRadius:12 }}>
+            <motion.button whileTap={{ scale: 0.95 }} className={`tab-btn ${viewTab==="list"?"active":""}`} onClick={() => setViewTab("list")} style={viewTab==="list"?{background:"var(--green-mid)", color:"white"}:{color:"var(--text-mid)"}}>
+              <List size={16} style={{marginRight:4}} /> List
+            </motion.button>
+            <motion.button whileTap={{ scale: 0.95 }} className={`tab-btn ${viewTab==="map"?"active":""}`} onClick={() => setViewTab("map")} style={viewTab==="map"?{background:"var(--green-mid)", color:"white"}:{color:"var(--text-mid)"}}>
+              <MapIcon size={16} style={{marginRight:4}} /> Map
+            </motion.button>
           </div>
         </div>
       </div>
 
       {/* My Orders Panel */}
-      {showOrders && user && (
-        <div className="glass-card mb-3" style={{ maxHeight:300, overflowY:"auto" }}>
-          <h3 className="section-title" style={{ fontSize:"1rem" }}>📦 My Orders</h3>
-          {myOrders.length === 0 ? (
-            <p style={{ color:"var(--text-muted)", fontSize:"0.85rem" }}>No orders yet.</p>
-          ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:"0.5rem" }}>
-              {myOrders.map(o => (
-                <div key={o._id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0.6rem", background:"rgba(255,255,255,0.05)", borderRadius:"var(--radius-sm)" }}>
-                  <div>
-                    <span style={{ color:"var(--cream)", fontWeight:600, fontSize:"0.88rem" }}>{o.crop?.name || "Order"}</span>
-                    <span style={{ color:"var(--text-muted)", fontSize:"0.78rem", marginLeft:"0.5rem" }}>{o.quantity} {o.crop?.unit||"kg"}</span>
+      <AnimatePresence>
+        {showOrders && user && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="glass-card mb-3" style={{ overflowY:"auto", background:"white", borderColor:"#e2e8f0", borderRadius:"var(--radius-lg)" }}>
+            <h3 className="section-title" style={{ fontSize:"1.1rem", color:"var(--text-dark)", marginBottom:"1rem" }}>📦 {t("myOrders")}</h3>
+            {myOrders.length === 0 ? (
+              <p style={{ color:"var(--text-muted)", fontSize:"0.95rem" }}>No orders yet.</p>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+                {myOrders.map(o => (
+                  <div key={o._id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"1rem", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:"var(--radius-md)" }}>
+                    <div>
+                      <span style={{ color:"var(--text-dark)", fontWeight:700, fontSize:"1rem", display:"block" }}>{o.crop?.name || "Order"}</span>
+                      <span style={{ color:"var(--text-muted)", fontSize:"0.85rem" }}>{o.quantity} {o.crop?.unit||"kg"} • {o.date}</span>
+                    </div>
+                    <div style={{ display:"flex", gap:"1rem", alignItems:"center" }}>
+                      <span style={{ color:"var(--green-mid)", fontWeight:800, fontSize:"1.1rem" }}>₹{(o.totalAmount||0).toLocaleString()}</span>
+                      <span className={`badge ${o.status==="delivered"?"badge-green":o.status==="cancelled"?"badge-red":"badge-yellow"}`}>{o.status?.replace("_"," ")}</span>
+                    </div>
                   </div>
-                  <div style={{ display:"flex", gap:"0.75rem", alignItems:"center" }}>
-                    <span style={{ color:"var(--yellow-wheat)", fontWeight:700 }}>₹{(o.totalAmount||0).toLocaleString()}</span>
-                    <span className={`badge ${o.status==="delivered"?"badge-green":o.status==="cancelled"?"badge-red":"badge-yellow"}`}>{o.status?.replace("_"," ")}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Search + Filter */}
-      <div style={{ display:"flex", gap:"1rem", marginBottom:"1.5rem", flexWrap:"wrap", alignItems:"center" }}>
-        <div style={{ flex:1, minWidth:220 }}>
-          <AutoSuggestInput
-            value={search}
-            onChange={setSearch}
-            placeholder={`🔍 ${t("search")}...`}
-            fieldType="crop"
-            onSpeak={() => startListening((val) => {
-              if (typeof val === "function") setSearch(f=>val(f));
-              else setSearch(val);
-            }, { replace: true })}
-            listening={listening}
-            interim={interim}
-          />
+      {/* Search + Filter Horizontal Bar (Premium Style) */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem", marginBottom: "2rem" }}>
+        
+        {/* Search & AI Bar */}
+        <div style={{ marginBottom: "2rem", display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ flex: 1, minWidth: 300, position: "relative" }}>
+            <AutoSuggestInput 
+              value={search} 
+              onChange={setSearch} 
+              onSpeak={() => startListening((val) => {
+                if (typeof val === "function") setSearch(f=>val(f));
+                else setSearch(val);
+              }, { replace: true, fieldId: "search" })}
+              listening={listening && activeField === "search"}
+              interim={interim}
+              placeholder="🔍 Search fresh crops, vegetables, grains..." 
+              fieldType="default"
+              style={{
+                width: "100%", padding: "1.2rem 1.2rem 1.2rem 3rem", fontSize: "1.1rem",
+                borderRadius: "100px", border: "1px solid #e2e8f0", background: "white",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.05)", outline: "none", transition: "all 0.3s"
+              }}
+            />
+          </div>
         </div>
-        <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
+        
+        {/* Horizontal Category Pill Scroll */}
+        <div style={{ display:"flex", gap:"0.75rem", overflowX:"auto", paddingBottom:"0.5rem", flexShrink:0, maxWidth:"100%" }} className="no-scrollbar">
           {CATS.map(c => (
-            <button key={c} onClick={() => setCategory(c)} style={{
-              padding:"0.4rem 0.85rem", borderRadius:"100px",
-              border: category===c ? "none" : "1px solid rgba(82,183,136,0.3)",
-              background: category===c ? "var(--gradient-btn)" : "rgba(255,255,255,0.05)",
-              color: category===c ? "var(--cream)" : "var(--green-pale)",
-              fontSize:"0.8rem", fontWeight:600, cursor:"pointer", transition:"all 0.2s"
+            <motion.button 
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              key={c} onClick={() => setCategory(c)} style={{
+              padding:"0.6rem 1.2rem", borderRadius:"100px",
+              border: category===c ? "none" : "1px solid #e2e8f0",
+              background: category===c ? "var(--green-mid)" : "white",
+              color: category===c ? "white" : "var(--text-mid)",
+              fontSize:"0.95rem", fontWeight:700, cursor:"pointer", transition:"all 0.2s",
+              whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:"0.5rem",
+              boxShadow: category===c ? "0 8px 20px rgba(22, 163, 74, 0.3)" : "0 2px 10px rgba(0,0,0,0.02)"
             }}>
-              {c === "all" ? "🌾 All" : c.charAt(0).toUpperCase()+c.slice(1)}
-            </button>
+              {c === "all" ? `🌾 ${t("allItems")}` : c === "vegetable" ? `🥦 ${t("veggies")}` : c === "fruit" ? `🍎 ${t("fruits")}` : c === "grain" ? `🌾 ${t("grains")}` : t(c)}
+            </motion.button>
           ))}
         </div>
       </div>
 
+      {/* Seasonal Specials Section */}
+      {filtered.some(c => c.season === "rabi" || c.season === "kharif") && search === "" && category === "all" && viewTab === "list" && (
+        <div className="mb-3">
+          <h3 className="section-title mb-1">🌟 {t("seasonalSpecials")}</h3>
+          <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>{t("freshlyHarvested")}</p>
+          <div className="scroll-x no-scrollbar" style={{ display: "flex", gap: "1rem", overflowX: "auto", paddingBottom: "1rem" }}>
+            {filtered.filter(c => c.season === "rabi" || c.season === "kharif").slice(0, 5).map(c => (
+              <div key={c._id} className="crop-card" onClick={() => openCrop(c)} style={{ minWidth: 260, cursor: "pointer", flexShrink: 0, border: "1px solid var(--green-pale)" }}>
+                <div className="crop-img-wrap" style={{ height: 140 }}>
+                  {c.image ? <img src={`http://localhost:5000${c.image}`} alt={c.name} /> : <div className="crop-img-fallback">🌿</div>}
+                  {c.isPrebooking && <span className="organic-badge" style={{ background: "var(--yellow-wheat)", color: "black", border: "none" }}>⏳ Pre-Book</span>}
+                  {c.isOrganic && <span className="organic-badge">🌿 Organic</span>}
+                </div>
+                <div className="crop-info" style={{ padding: "1rem" }}>
+                  <div className="flex-between">
+                    <h3 className="crop-title" style={{ fontSize: "1.1rem" }}>{c.name}</h3>
+                    <span className="crop-price">₹{c.price}/{c.unit||"kg"}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── MAP VIEW ── */}
       {viewTab === "map" ? (
-        <div className="marketplace-layout">
-          <div className="marketplace-sidebar">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="marketplace-layout">
+          <div className="marketplace-sidebar" style={{ background:"white", border:"1px solid #e2e8f0", borderRadius:"var(--radius-lg)" }}>
             {loading ? (
               <div className="loader-wrapper"><div className="loader"></div></div>
             ) : filtered.length === 0 ? (
-              <div className="glass-card text-center" style={{ padding:"2rem" }}>
+              <div className="glass-card text-center" style={{ padding:"2rem", border:"none", boxShadow:"none" }}>
                 <p style={{ fontSize:"2.5rem" }}>🌿</p>
-                <p style={{ color:"var(--green-pale)", marginTop:"0.75rem" }}>No crops found.</p>
+                <p style={{ color:"var(--text-muted)", marginTop:"0.75rem" }}>{t("noData")}</p>
               </div>
             ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem" }}>
+              <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem", padding:"1rem" }}>
                 {filtered.map(c => (
-                  <div key={c._id} onClick={() => setSelected(c)} style={{
+                  <motion.div whileHover={{ scale: 1.02 }} key={c._id} onClick={() => setSelected(c)} style={{
                     display:"flex", gap:"0.75rem", alignItems:"center", padding:"0.85rem",
-                    background: selected?._id === c._id ? "rgba(82,183,136,0.2)" : "rgba(255,255,255,0.06)",
-                    border: selected?._id === c._id ? "1.5px solid var(--green-light)" : "1px solid var(--card-border)",
+                    background: selected?._id === c._id ? "var(--green-pale)" : "white",
+                    border: selected?._id === c._id ? "1.5px solid var(--green-light)" : "1px solid #e2e8f0",
                     borderRadius:"var(--radius-md)", cursor:"pointer", transition:"all 0.2s"
                   }}>
-                    <div style={{ width:56, height:56, borderRadius:8, background:"linear-gradient(135deg,#1a4a2e,#2d7a4f)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1.5rem", flexShrink:0, overflow:"hidden" }}>
+                    <div style={{ width:56, height:56, borderRadius:8, background:"#f1f5f9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"1.5rem", flexShrink:0, overflow:"hidden" }}>
                       {c.image ? <img src={`http://localhost:5000${c.image}`} alt={c.name} style={{ width:"100%", height:"100%", objectFit:"cover" }} /> : "🌿"}
                     </div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:"0.4rem" }}>
-                        <h4 style={{ color:"var(--cream)", fontSize:"0.95rem", fontWeight:700 }}>{c.name}</h4>
-                        {c.isOrganic && <span className="organic-tag">🌿</span>}
+                        <h4 style={{ color:"var(--text-dark)", fontSize:"0.95rem", fontWeight:700 }}>{c.name}</h4>
+                        {c.isOrganic && <span className="organic-tag" style={{ fontSize:"0.6rem", padding:"2px 6px" }}>🌿 Organic</span>}
                       </div>
-                      <div style={{ color:"var(--yellow-wheat)", fontWeight:700, fontSize:"1rem" }}>₹{c.price}/{c.unit||"kg"}</div>
-                      <div style={{ color:"var(--green-pale)", fontSize:"0.75rem" }}>{c.quantity} {c.unit||"kg"} left</div>
+                      <div style={{ color:"var(--green-mid)", fontWeight:700, fontSize:"1rem" }}>₹{c.price}/{c.unit||"kg"}</div>
+                      <div style={{ color:"var(--text-muted)", fontSize:"0.75rem" }}>{c.quantity} {c.unit||"kg"} left</div>
                     </div>
-                    <button className="btn-primary" style={{ width:"auto", padding:"0.5rem 0.75rem", fontSize:"0.78rem", flexShrink:0 }} onClick={(e) => { e.stopPropagation(); openCrop(c); }}>Buy</button>
-                  </div>
+                    <button className="btn-primary" style={{ width:"auto", padding:"0.5rem 0.85rem", fontSize:"0.8rem", flexShrink:0, borderRadius:"100px" }} onClick={(e) => { e.stopPropagation(); openCrop(c); }}>{t("buy")}</button>
+                  </motion.div>
                 ))}
               </div>
             )}
           </div>
           <div className="marketplace-map-panel">
-            <div className="map-container">
-              <MapContainer center={[17.385, 78.4867]} zoom={6} style={{ height:"100%", width:"100%", borderRadius:"var(--radius-lg)" }}>
-                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community" />
+            <div className="map-container" style={{ border:"4px solid white", boxShadow:"var(--shadow-soft)" }}>
+              <MapContainer center={[17.385, 78.4867]} zoom={6} style={{ height:"100%", width:"100%", borderRadius:"calc(var(--radius-lg) - 4px)" }}>
+                {/* High-Detail Hybrid Map (Satellite + Streets + Labels) */}
+                <TileLayer 
+                  url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}" 
+                  attribution="Map data &copy; Google" 
+                />
                 <MapInvalidator />
                 {selected && <FlyToMarker crop={selected} />}
-                {mapLocations.map(c => (
-                  <Marker key={c._id} position={[c.latitude, c.longitude]} icon={farmerIcon}>
-                    <Popup>
-                      <div style={{ minWidth:180, fontFamily:"Poppins,sans-serif" }}>
-                        <strong style={{ fontSize:"1rem" }}>{c.name}</strong><br/>
-                        <span style={{ color:"#2d7a4f", fontWeight:700 }}>₹{c.price}/{c.unit||"kg"}</span><br/>
-                        <span style={{ color:"#666", fontSize:"0.8rem" }}>{c.quantity} {c.unit||"kg"} available</span><br/>
-                        {c.isOrganic && <span style={{ background:"#e8f5e9", color:"#2e7d32", padding:"1px 6px", borderRadius:10, fontSize:"0.7rem", fontWeight:700 }}>🌿 Organic</span>}
-                        <br/>
-                        <button onClick={() => openCrop(c)} style={{ marginTop:8, background:"#2d7a4f", color:"white", border:"none", padding:"6px 12px", borderRadius:6, cursor:"pointer", width:"100%", fontWeight:600 }}>View & Order</button>
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
+                {mapLocations.map(c => {
+                  const lat = c.latitude || c.farmer?.latitude;
+                  const lng = c.longitude || c.farmer?.longitude;
+                  return (
+                    <Marker key={c._id} position={[lat, lng]} icon={farmerIcon}>
+                      <Popup>
+                        <div style={{ minWidth:180, fontFamily:"Poppins,sans-serif" }}>
+                          <strong style={{ fontSize:"1rem" }}>{c.name}</strong><br/>
+                          <span style={{ color:"var(--green-mid)", fontWeight:800 }}>₹{c.price}/{c.unit||"kg"}</span><br/>
+                          <span style={{ color:"#666", fontSize:"0.8rem" }}>{c.quantity} {c.unit||"kg"} available</span><br/>
+                          {c.isOrganic && <span style={{ background:"#dcfce7", color:"#16a34a", padding:"2px 8px", borderRadius:10, fontSize:"0.7rem", fontWeight:700, display:"inline-block", marginTop:4 }}>🌿 Organic</span>}
+                          <br/>
+                          <button onClick={() => openCrop(c)} style={{ marginTop:12, background:"var(--green-mid)", color:"white", border:"none", padding:"8px 12px", borderRadius:100, cursor:"pointer", width:"100%", fontWeight:700 }}>View & Order</button>
+                        </div>
+                      </Popup>
+                    </Marker>
+                  );
+                })}
               </MapContainer>
             </div>
           </div>
-        </div>
+        </motion.div>
       ) : (
         /* ── GRID LIST VIEW ── */
         loading ? (
-          <div className="loader-wrapper"><div className="loader"></div><p className="loader-text">{t("loading")}</p></div>
+          <div className="loader-wrapper"><div className="loader"></div><p className="loader-text" style={{color:"var(--text-muted)"}}>{t("loading")}</p></div>
         ) : filtered.length === 0 ? (
-          <div className="glass-card text-center" style={{ padding:"3rem" }}>
-            <p style={{ fontSize:"3rem" }}>🌿</p>
-            <p style={{ color:"var(--green-pale)", marginTop:"1rem" }}>{t("noData")}</p>
-          </div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass-card text-center" style={{ padding:"4rem", background:"white" }}>
+            <div style={{ fontSize:"4rem", marginBottom:"1rem" }}>🌱</div>
+            <h3 style={{ color:"var(--text-dark)", fontSize:"1.5rem" }}>{t("noData")}</h3>
+            <p style={{ color:"var(--text-muted)", marginTop:"0.5rem" }}>Try adjusting your search or filters.</p>
+          </motion.div>
         ) : (
-          <div className="grid-auto">
+          <motion.div 
+            variants={containerVariants}
+            initial="hidden"
+            animate="visible"
+            className="grid-auto">
             {filtered.map(c => (
-              <div className="crop-card" key={c._id} onClick={() => openCrop(c)}>
+              <motion.div variants={itemVariants} className="crop-card" key={c._id} onClick={() => openCrop(c)}>
                 {c.image
                   ? <img src={`http://localhost:5000${c.image}`} alt={c.name} />
-                  : <div style={{ height:160, background:"linear-gradient(135deg,#1a4a2e,#2d7a4f)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"3.5rem" }}>
+                  : <div style={{ height:180, background:"#f1f5f9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"4rem" }}>
                       {c.category==="fruit"?"🍎":c.category==="grain"?"🌾":c.category==="vegetable"?"🥦":c.category==="spice"?"🌶️":"🌿"}
                     </div>
                 }
@@ -412,13 +599,18 @@ export default function Marketplace() {
                     {c.isOrganic && <span className="organic-tag">🌿</span>}
                   </div>
                   <div className="crop-price">₹{c.price}/{c.unit||"kg"}</div>
-                  <div className="crop-qty">{c.quantity} {c.unit||"kg"} available</div>
-                  {c.location && <p style={{ fontSize:"0.75rem", color:"var(--text-muted)", margin:"0.3rem 0 0.75rem" }}>📍 {c.location.substring(0,35)}...</p>}
-                  <button className="btn-primary" style={{ fontSize:"0.85rem", padding:"0.65rem" }}>🛒 {t("buy")}</button>
+                  <div className="crop-qty">{c.quantity} {c.unit||"kg"} left in stock</div>
+                  {c.location && <p style={{ fontSize:"0.8rem", color:"var(--text-muted)", margin:"0.3rem 0 1rem", display:"flex", alignItems:"center", gap:"0.3rem" }}><MapIcon size={14}/> {c.location.substring(0,35)}...</p>}
+                  
+                  <div style={{ marginTop:"auto" }}>
+                    <button className="btn-primary" style={{ fontSize:"0.9rem", padding:"0.75rem", borderRadius:"100px", width:"100%" }}>
+                      <ShoppingBag size={18} /> {t("buy")}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </motion.div>
             ))}
-          </div>
+          </motion.div>
         )
       )}
 
@@ -448,6 +640,9 @@ export default function Marketplace() {
                   ) : (
                     <div className="bill-row"><span className="label">Delivery ({showBill.deliveryDistance} km)</span><span>₹{showBill.deliveryCharges}</span></div>
                   )}
+                  {showBill.pointsUsed > 0 && (
+                    <div className="bill-row"><span className="label" style={{ color: "var(--green-mid)" }}>Rewards Discount</span><span style={{ color: "var(--green-mid)" }}>-₹{showBill.pointsUsed}</span></div>
+                  )}
                   <div className="bill-row total"><span>Total</span><span>₹{showBill.totalAmount.toLocaleString()}</span></div>
                   <div className="bill-row"><span className="label">Payment</span><span className="badge badge-blue">{showBill.paymentMode?.toUpperCase()}</span></div>
                 </div>
@@ -466,9 +661,12 @@ export default function Marketplace() {
                   }
                   <div>
                     <h2 style={{ color:"var(--cream)", fontSize:"1.4rem", fontWeight:700 }}>{selected.name}</h2>
+                    {selected.isPrebooking && <span className="organic-tag mb-1" style={{ background: "var(--yellow-wheat)", color: "#000", border: "none" }}>⏳ Pre-Booking</span>}
                     {selected.isOrganic && <span className="organic-tag mb-1">🌿 Certified Organic</span>}
                     <div style={{ color:"var(--yellow-wheat)", fontSize:"1.3rem", fontWeight:800, marginTop:"0.4rem" }}>₹{selected.price}/{selected.unit||"kg"}</div>
-                    <div style={{ color:"var(--green-pale)", fontSize:"0.82rem", marginTop:"0.25rem" }}>📦 {selected.quantity} {selected.unit||"kg"} in stock • {selected.category}</div>
+                    <div style={{ color:"var(--green-pale)", fontSize:"0.82rem", marginTop:"0.25rem" }}>
+                      📦 {selected.quantity} {selected.unit||"kg"} {selected.isPrebooking ? "available for pre-order" : "in stock"} • {selected.category}
+                    </div>
                     {selected.location && <div style={{ color:"var(--text-muted)", fontSize:"0.75rem", marginTop:"0.2rem" }}>📍 {selected.location.substring(0,50)}</div>}
                   </div>
                 </div>
@@ -506,15 +704,15 @@ export default function Marketplace() {
 
                 {/* Delivery Type Selection */}
                 <div className="form-group">
-                  <label className="field-label">Delivery Option</label>
+                  <label className="field-label">{t("deliveryOption")}</label>
                   <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.75rem" }}>
                     <div className={`delivery-option ${deliveryType==="farm_pickup"?"selected":""}`} onClick={() => setDeliveryType("farm_pickup")}>
-                      <h4>🏡 Buy at Farm</h4>
+                      <h4>🏡 {t("buyAtFarm")}</h4>
                       <p>Pick up directly from farmer</p>
                       <div className="price" style={{ marginTop:"0.4rem" }}>FREE</div>
                     </div>
                     <div className={`delivery-option ${deliveryType==="standard"?"selected":""}`} onClick={() => setDeliveryType("standard")}>
-                      <h4>🚚 Home Delivery</h4>
+                      <h4>🚚 {t("homeDelivery")}</h4>
                       <p>Delivered to your doorstep</p>
                       <div className="price" style={{ marginTop:"0.4rem" }}>
                         {deliveryDistance > 0 ? `₹${deliveryCharges} (${Math.round(deliveryDistance)}km)` : `₹${DELIVERY_BASE}+`}
@@ -526,13 +724,29 @@ export default function Marketplace() {
                 <div className="grid-2 mt-2">
                   <div className="form-group">
                     <label className="field-label">Quantity ({selected.unit||"kg"})</label>
-                    <input className="rs-input" type="number" min={1} max={selected.quantity} value={orderQty} onChange={(e) => setOrderQty(Number(e.target.value))} />
+                    <div className="input-wrapper">
+                      <input
+                        className="rs-input"
+                        type="number"
+                        min={1}
+                        max={selected.quantity}
+                        value={listening && activeField === "orderQty" && interim ? interim : orderQty}
+                        onChange={(e) => setOrderQty(Number(e.target.value))}
+                        style={listening && activeField === "orderQty" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                      />
+                      <button type="button" className={`mic-btn ${listening && activeField === "orderQty" ? "active" : ""}`} onClick={() => startListening((val) => {
+                        const str = typeof val === "function" ? val("") : val;
+                        const numStr = parseSpokenNumber(str);
+                        const num = parseInt(numStr);
+                        if (!isNaN(num)) setOrderQty(num);
+                      }, { replace: true, fieldId: "orderQty" })}>🎤</button>
+                    </div>
                   </div>
                   <div className="form-group">
-                    <label className="field-label">Payment Method</label>
+                    <label className="field-label">{t("paymentMethod")}</label>
                     <select className="rs-select" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                      <option value="cod">💵 Cash on Delivery</option>
-                      <option value="online">💳 Pay Online (UPI/Card)</option>
+                      <option value="cod">💵 {t("cashOnDelivery")}</option>
+                      <option value="online">💳 {t("payOnline")}</option>
                     </select>
                   </div>
                 </div>
@@ -543,13 +757,35 @@ export default function Marketplace() {
                     <label className="field-label">Delivery Address</label>
                     <div style={{ display: "flex", gap: "0.6rem" }}>
                       <div className="input-wrapper" style={{ flex: 1 }}>
-                        <input className="rs-input" placeholder="Your delivery address..." value={orderAddr} onChange={(e) => setOrderAddr(e.target.value)} />
-                        <button type="button" className={`mic-btn ${listening ? "active" : ""}`} onClick={() => startListening((val) => {
+                        <input
+                          className="rs-input"
+                          placeholder="Your delivery address..."
+                          value={listening && activeField === "orderAddr" && interim ? `${orderAddr} ${interim}...` : orderAddr}
+                          onChange={(e) => setOrderAddr(e.target.value)}
+                          style={listening && activeField === "orderAddr" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                        />
+                        <button type="button" className={`mic-btn ${listening && activeField === "orderAddr" ? "active" : ""}`} onClick={() => startListening((val) => {
                           if (typeof val === "function") setOrderAddr(prev => val(prev));
                           else setOrderAddr(val);
-                        })}>🎤</button>
+                        }, { fieldId: "orderAddr" })}>🎤</button>
                       </div>
                       <button type="button" className="btn-icon" onClick={detectLocation} title="Auto-detect">📍</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Points Discount */}
+                {user && user.rewardPoints > 0 && (
+                  <div className="form-group" style={{ background: "var(--green-pale)", padding: "1rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--green-mid)" }}>
+                    <div className="flex-between">
+                      <div>
+                        <span style={{ fontWeight: 700, color: "var(--green-deep)" }}>🏆 Use Reward Points</span>
+                        <p style={{ fontSize: "0.8rem", color: "var(--green-mid)" }}>You have {user.rewardPoints} points available. (1 point = ₹1)</p>
+                      </div>
+                      <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+                        <input type="checkbox" checked={usePoints} onChange={(e) => setUsePoints(e.target.checked)} style={{ width: 20, height: 20 }} />
+                        <span style={{ fontWeight: 600, color: "var(--green-deep)" }}>Apply</span>
+                      </label>
                     </div>
                   </div>
                 )}
@@ -562,7 +798,10 @@ export default function Marketplace() {
                   ) : (
                     <div className="bill-row"><span className="label">Delivery {deliveryDistance > 0 ? `(${Math.round(deliveryDistance)}km)` : ""}</span><span>₹{deliveryCharges}</span></div>
                   )}
-                  <div className="bill-row total"><span>Total</span><span>₹{totalAmount.toLocaleString()}</span></div>
+                  {pointsDiscount > 0 && (
+                    <div className="bill-row"><span className="label" style={{ color: "var(--green-mid)" }}>Rewards Discount</span><span style={{ color: "var(--green-mid)" }}>-₹{pointsDiscount}</span></div>
+                  )}
+                  <div className="bill-row total"><span>{t("total")}</span><span>₹{totalAmount.toLocaleString()}</span></div>
                 </div>
 
                 <div style={{ display:"flex", gap:"0.75rem" }}>
@@ -576,6 +815,6 @@ export default function Marketplace() {
           </div>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

@@ -18,6 +18,14 @@ export const addCrop = async (req, res) => {
     if (req.file) {
       cropData.image = `/uploads/${req.file.filename}`;
     }
+    
+    // Parse booleans from FormData
+    if (cropData.isPrebooking === 'true' || cropData.isPrebooking === true) cropData.isPrebooking = true;
+    else cropData.isPrebooking = false;
+
+    if (cropData.isOrganic === 'true' || cropData.isOrganic === true) cropData.isOrganic = true;
+    else cropData.isOrganic = false;
+
     const crop = await Crop.create(cropData);
     
     // Emit real-time event

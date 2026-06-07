@@ -23,6 +23,7 @@ const cropSchema = new mongoose.Schema({
   season: { type: String, enum: ["kharif", "rabi", "zaid", "perennial"], default: "kharif" },
   isOrganic: { type: Boolean, default: false },
   isAvailable: { type: Boolean, default: true },
+  isPrebooking: { type: Boolean, default: false },
   nutritionInfo: {
     calories: Number,
     carbs: Number,

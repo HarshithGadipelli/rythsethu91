@@ -3,76 +3,50 @@ import { useLang } from "../../context/LangContext";
 import { useAuth } from "../../context/AuthContext";
 import { useVoiceInput } from "../../utils/useVoiceInput";
 import AutoSuggestInput from "../../components/AutoSuggestInput";
+import { useNavigate } from "react-router-dom";
 import API from "../../api/api";
+import { playTTS } from "../../utils/tts";
 import { io } from "socket.io-client";
+import { parseSpokenNumber, parseVoiceToFormMultilingual } from "../../utils/voiceParser";
 
 const CATEGORIES = ["vegetable","fruit","grain","pulse","spice","dairy","other"];
 const SEASONS    = ["kharif","rabi","zaid","perennial"];
 const SOILS      = ["loamy","clay","sandy","silt","peat","chalk","other"];
 
-const parseVoiceToForm = (text) => {
-  const lower = text.toLowerCase();
-  const updates = {};
-  
-  const commonCrops = ["tomato", "potato", "onion", "rice", "wheat", "cotton", "apple", "mango", "banana", "chili", "garlic", "ginger", "cabbage", "cauliflower", "carrot", "brinjal", "spinach", "pulses", "sugarcane"];
-  for (let crop of commonCrops) {
-    if (lower.includes(crop)) {
-      updates.name = crop.charAt(0).toUpperCase() + crop.slice(1);
-      if (["apple", "mango", "banana"].includes(crop)) updates.category = "fruit";
-      else if (["rice", "wheat"].includes(crop)) updates.category = "grain";
-      else if (["cotton", "sugarcane"].includes(crop)) updates.category = "other";
-      else if (["chili", "garlic", "ginger"].includes(crop)) updates.category = "spice";
-      else if (["pulses"].includes(crop)) updates.category = "pulse";
-      else updates.category = "vegetable";
-      break;
-    }
-  }
+// Voice parsing is now handled by voiceParser.js
 
-  const categories = ["vegetable","fruit","grain","pulse","spice","dairy","other"];
-  for (let c of categories) {
-    if (lower.includes(c)) updates.category = c;
-  }
-  
-  const priceMatch = lower.match(/(?:rs\.?|rupees|price|₹)\s*(\d+)/) || lower.match(/(\d+)\s*(?:rs\.?|rupees|₹|\/kg|per kg)/);
-  if (priceMatch) updates.price = priceMatch[1];
+const DemandPanel = () => {
+  const [demand, setDemand] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const qtyMatch = lower.match(/(\d+)\s*(kg|kilos|g|grams|litre|liters|piece|pieces|dozen|ton|tons)/);
-  if (qtyMatch) {
-    let q = parseInt(qtyMatch[1]);
-    let u = qtyMatch[2];
-    if (u === "ton" || u === "tons") { q *= 1000; u = "kg"; }
-    else if (u === "kilos") u = "kg";
-    else if (u === "grams") u = "g";
-    else if (u === "liters") u = "litre";
-    else if (u === "pieces") u = "piece";
-    updates.quantity = q;
-    updates.unit = u;
-  }
+  useEffect(() => {
+    API.post("/ml/demand-predict").then(res => {
+      setDemand(res.data.demand);
+      setLoading(false);
+    }).catch(err => setLoading(false));
+  }, []);
 
-  const seasons = ["kharif", "rabi", "zaid", "perennial"];
-  for (let s of seasons) {
-    if (lower.includes(s)) updates.season = s;
-  }
+  if (loading) return <p style={{ color: "var(--text-muted)" }}>Loading demand data from database...</p>;
+  if (!demand || demand.length === 0) return <p>No demand data available.</p>;
 
-  if (lower.includes("organic") || lower.includes("natural")) {
-    updates.isOrganic = true;
-  }
-
-  const locMatch = lower.match(/(?:in|from|at)\s+([a-zA-Z]+)/);
-  if (locMatch) {
-    const loc = locMatch[1];
-    if (!commonCrops.includes(loc) && !seasons.includes(loc) && loc !== "organic") {
-      updates.location = loc.charAt(0).toUpperCase() + loc.slice(1);
-    }
-  }
-
-  return updates;
+  return (
+    <div>
+      <ul style={{ listStyle: "none", padding: 0 }}>
+        {demand.map((crop, i) => (
+          <li key={i} style={{ padding: "0.75rem", background: "var(--green-pale)", color: "var(--green-deep)", marginBottom: "0.5rem", borderRadius: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <strong style={{ fontSize: "1.1rem" }}>#{i+1} {crop}</strong>
+            <span style={{ fontSize: "0.85rem", background: "var(--green-mid)", color: "white", padding: "2px 8px", borderRadius: "10px" }}>🔥 High Demand</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 };
 
 export default function FarmerDashboard() {
   const { t, lang } = useLang();
   const { user } = useAuth();
-  const { listening, interim, startListening } = useVoiceInput(lang);
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang);
 
   const [tab, setTab] = useState("crops");
   const [crops, setCrops] = useState([]);
@@ -80,6 +54,7 @@ export default function FarmerDashboard() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState({ type: "", text: "" });
   const [locLoading, setLocLoading] = useState(false);
+  const [focusField, setFocusField] = useState("name");
   const [mlLoading, setMlLoading] = useState(false);
   const [mlResult, setMlResult] = useState(null);
   const [tipsResult, setTipsResult] = useState(null);
@@ -91,8 +66,30 @@ export default function FarmerDashboard() {
     harvestDate:"", image: null,
   });
 
-  const [weather, setWeather] = useState({ temp:"28", hum:"65", rain:"80" });
+  const [weatherLive, setWeatherLive] = useState(null);
   const [tipsForm, setTipsForm] = useState({ crop:"", soil:"loamy" });
+
+  const fetchLiveWeather = async () => {
+    if (!form.latitude || !form.longitude) {
+      setMsg({ type: "error", text: "Please detect your location in the Add Crop tab first!" });
+      return;
+    }
+    setMlLoading(true);
+    try {
+      const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${form.latitude}&longitude=${form.longitude}&current=temperature_2m,relative_humidity_2m,precipitation`);
+      const data = await res.json();
+      setWeatherLive({
+        temp: data.current.temperature_2m,
+        hum: data.current.relative_humidity_2m,
+        rain: data.current.precipitation
+      });
+      setMsg({ type: "success", text: "Live weather data fetched successfully." });
+    } catch (e) {
+      setMsg({ type: "error", text: "Failed to fetch live weather." });
+    } finally {
+      setMlLoading(false);
+    }
+  };
 
   const set = (k) => (val) => {
     if (typeof val === "function") {
@@ -105,12 +102,17 @@ export default function FarmerDashboard() {
   };
 
   const speak = (field) => startListening((val) => {
+    const isNumeric = ["price", "quantity", "farmSize", "experience"].includes(field);
     if (typeof val === "function") {
-      setForm((f) => ({ ...f, [field]: val(f[field]) }));
+      setForm((f) => {
+        const prev = f[field];
+        const newVal = val(prev);
+        return { ...f, [field]: isNumeric ? parseSpokenNumber(newVal) : newVal };
+      });
     } else {
-      setForm((f) => ({ ...f, [field]: val }));
+      setForm((f) => ({ ...f, [field]: isNumeric ? parseSpokenNumber(val) : val }));
     }
-  });
+  }, { fieldId: field });
 
   useEffect(() => { 
     fetchCrops();
@@ -118,7 +120,28 @@ export default function FarmerDashboard() {
     const socket = io("http://localhost:5000");
     socket.on("order_created", () => { fetchCrops(); fetchOrders(); });
     socket.on("farmer_verified", () => window.location.reload());
-    return () => socket.disconnect();
+
+    // Listen for AI Autofill events
+    const handleAIAutofill = (e) => {
+      if (e.detail.context === "farmer_add_crop" && e.detail.parsedData) {
+        setTab("add");
+        const pd = e.detail.parsedData;
+        setForm(f => ({
+          ...f,
+          name: pd.name || f.name,
+          quantity: pd.quantity || f.quantity,
+          unit: pd.unit || f.unit,
+          price: pd.price || f.price,
+          isOrganic: pd.isOrganic !== undefined ? pd.isOrganic : f.isOrganic
+        }));
+      }
+    };
+    window.addEventListener("ai_autofill", handleAIAutofill);
+
+    return () => {
+      socket.disconnect();
+      window.removeEventListener("ai_autofill", handleAIAutofill);
+    };
   }, []);
 
   const fetchCrops = async () => {
@@ -164,7 +187,7 @@ export default function FarmerDashboard() {
       if (form.image) fd.append("image", form.image);
       await API.post("/crops/add", fd, { headers: { "Content-Type": "multipart/form-data" } });
       setMsg({ type:"success", text:"✅ Crop listed successfully!" });
-      setForm({ name:"", description:"", category:"vegetable", price:"", quantity:"", unit:"kg", season:"kharif", isOrganic:false, location:"", latitude:"", longitude:"", harvestDate:"", image:null });
+      setForm({ name:"", description:"", category:"vegetable", price:"", quantity:"", unit:"kg", season:"kharif", isOrganic:false, isPrebooking:false, location:"", latitude:"", longitude:"", harvestDate:"", image:null });
       fetchCrops();
       setTab("crops");
     } catch (err) {
@@ -178,9 +201,10 @@ export default function FarmerDashboard() {
   };
 
   const runCropSuggest = async () => {
+    if (!weatherLive) return setMsg({ type: "error", text: "Please fetch live weather first." });
     setMlLoading(true); setMlResult(null);
     try {
-      const res = await API.post("/ml/crop-suggest", { temp: weather.temp, hum: weather.hum, rain: weather.rain });
+      const res = await API.post("/ml/crop-suggest", { temp: weatherLive.temp, hum: weatherLive.hum, rain: weatherLive.rain });
       setMlResult(res.data);
     } catch { setMlResult({ error: "ML service unavailable" }); }
     finally { setMlLoading(false); }
@@ -239,8 +263,8 @@ export default function FarmerDashboard() {
         {[
           { icon:"🌱", label:"My Crops", value: crops.length },
           { icon:"📦", label:"Orders", value: orders.length },
-          { icon:"📊", label:"Total Stock", value: `${crops.reduce((a,c)=>a+(c.quantity||0),0)} kg` },
-          { icon:"💰", label:"Revenue", value: `₹${totalRevenue.toLocaleString()}` }
+          { icon:"💰", label:"Revenue", value: `₹${totalRevenue.toLocaleString()}` },
+          { icon:"🏆", label:"Reward Points", value: user?.rewardPoints || 0 }
         ].map((s,i) => (
           <div className="stat-card" key={i}>
             <span className="stat-icon">{s.icon}</span>
@@ -338,21 +362,22 @@ export default function FarmerDashboard() {
 
       {/* ── ADD CROP TAB ── */}
       {tab === "add" && isVerified && (
-        <div className="glass-card" style={{ maxWidth:680, margin:"0 auto" }}>
+        <div className="guided-layout">
+        <div className="glass-card" style={{ flex: 1 }}>
           <div className="flex-between mb-2">
             <h3 className="section-title mb-0">🌿 {t("addCrop")}</h3>
             <button 
               type="button" 
-              className={`btn-primary ${listening ? "pulse" : ""}`} 
+              className={`btn-primary ${listening && activeField === "smartFill" ? "pulse" : ""}`} 
               style={{ width:"auto", background:"var(--yellow-wheat)", color:"#000", fontWeight:600, padding:"0.5rem 1rem" }} 
               onClick={() => {
                 startListening((text) => {
-                  const updates = parseVoiceToForm(text);
+                  const updates = parseVoiceToFormMultilingual(text, lang);
                   setForm(f => ({ ...f, ...updates }));
                   setMsg({ type:"success", text:`🎙️ Voice parsed: "${text}"`});
-                }, { replace: true });
+                }, { replace: true, fieldId: "smartFill" });
               }}>
-              {listening ? "🎙️ Listening..." : "🎤 Smart Voice Fill"}
+              {listening && activeField === "smartFill" ? "🎙️ Listening..." : "🎤 Smart Voice Fill"}
             </button>
           </div>
           <p style={{ color:"var(--text-muted)", fontSize:"0.85rem", marginBottom:"1rem" }}>
@@ -360,28 +385,69 @@ export default function FarmerDashboard() {
           </p>
 
           <div className="grid-2">
-            <AutoSuggestInput value={form.name} onChange={set("name")} onSpeak={() => speak("name")} listening={listening} interim={interim} label={`${t("cropName")} *`} placeholder="e.g. Tomato, Rice..." fieldType="crop" />
+            <AutoSuggestInput 
+              value={form.name} 
+              onChange={set("name")} 
+              onSpeak={() => speak("name")} 
+              onFocus={() => setFocusField("name")}
+              onTTS={() => playTTS(`Crop Name is ${form.name}`, lang)}
+              listening={listening && activeField === "name"} 
+              interim={interim} 
+              label={`${t("cropName")} *`} 
+              placeholder="e.g. Tomato, Rice..." 
+              fieldType="crop" 
+            />
             <div className="form-group">
               <label className="field-label">{t("category")}</label>
-              <select className="rs-select" value={form.category} onChange={set("category")}>
+              <select className="rs-select" value={form.category} onChange={set("category")} onFocus={() => setFocusField("name")}>
                 {CATEGORIES.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase()+c.slice(1)}</option>)}
               </select>
             </div>
           </div>
 
-          <AutoSuggestInput value={form.description} onChange={set("description")} onSpeak={() => speak("description")} listening={listening} interim={interim} label={t("description")} placeholder="Brief description of quality, freshness..." />
+          <AutoSuggestInput 
+            value={form.description} 
+            onChange={set("description")} 
+            onSpeak={() => speak("description")} 
+            onFocus={() => setFocusField("name")}
+            onTTS={() => playTTS(`Description is ${form.description}`, lang)}
+            listening={listening && activeField === "description"} 
+            interim={interim} 
+            label={t("description")} 
+            placeholder="Brief description of quality, freshness..." 
+          />
 
           <div className="grid-3">
             <div className="form-group">
               <label className="field-label">{t("price")} (₹) *</label>
               <div className="input-wrapper">
-                <input className="rs-input" type="number" placeholder="0" value={form.price} onChange={set("price")} />
+                <input
+                  className="rs-input"
+                  type="number"
+                  placeholder="0"
+                  value={listening && activeField === "price" && interim ? `${form.price} ${interim}...` : form.price}
+                  onChange={set("price")}
+                  onFocus={() => setFocusField("price")}
+                  style={listening && activeField === "price" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                />
+                <button type="button" className={`mic-btn ${listening && activeField === "price" ? "active" : ""}`} onClick={() => speak("price")}>🎤</button>
+                <button type="button" className="tts-btn" onClick={() => playTTS(`Price is ${form.price} rupees`, lang)}>🔊</button>
               </div>
             </div>
             <div className="form-group">
               <label className="field-label">{t("quantity")} *</label>
               <div className="input-wrapper">
-                <input className="rs-input" type="number" placeholder="0" value={form.quantity} onChange={set("quantity")} />
+                <input
+                  className="rs-input"
+                  type="number"
+                  placeholder="0"
+                  value={listening && activeField === "quantity" && interim ? `${form.quantity} ${interim}...` : form.quantity}
+                  onChange={set("quantity")}
+                  onFocus={() => setFocusField("quantity")}
+                  style={listening && activeField === "quantity" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                />
+                <button type="button" className={`mic-btn ${listening && activeField === "quantity" ? "active" : ""}`} onClick={() => speak("quantity")}>🎤</button>
+                <button type="button" className="tts-btn" onClick={() => playTTS(`Quantity is ${form.quantity}`, lang)}>🔊</button>
               </div>
             </div>
             <div className="form-group">
@@ -400,8 +466,8 @@ export default function FarmerDashboard() {
               </select>
             </div>
             <div className="form-group">
-              <label className="field-label">Harvest Date</label>
-              <input className="rs-input" type="date" value={form.harvestDate} onChange={set("harvestDate")} />
+              <label className="field-label">{t("harvestDate")}</label>
+              <input className="rs-input" type="date" value={form.harvestDate} onChange={set("harvestDate")} required={form.isPrebooking} />
             </div>
           </div>
 
@@ -409,8 +475,16 @@ export default function FarmerDashboard() {
             <label className="field-label">{t("location")}</label>
             <div style={{ display:"flex", gap:"0.6rem" }}>
               <div className="input-wrapper" style={{ flex:1 }}>
-                <input className="rs-input" placeholder="Farm location" value={form.location} onChange={set("location")} />
-                <button type="button" className={`mic-btn ${listening?"active":""}`} onClick={() => speak("location")}>🎤</button>
+                <input
+                  className="rs-input"
+                  placeholder="Farm location"
+                  value={listening && activeField === "location" && interim ? `${form.location} ${interim}...` : form.location}
+                  onChange={set("location")}
+                  onFocus={() => setFocusField("location")}
+                  style={listening && activeField === "location" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
+                />
+                <button type="button" className={`mic-btn ${listening && activeField === "location" ? "active" : ""}`} onClick={() => speak("location")}>🎤</button>
+                <button type="button" className="tts-btn" onClick={() => playTTS(`Location is ${form.location}`, lang)}>🔊</button>
               </div>
               <button type="button" className="btn-icon" onClick={getLocation} disabled={locLoading} title="Auto-detect">
                 {locLoading ? "⏳" : "📍"}
@@ -419,12 +493,21 @@ export default function FarmerDashboard() {
             {form.latitude && <p style={{ fontSize:"0.72rem", color:"var(--green-light)", marginTop:"0.3rem" }}>✅ Location captured</p>}
           </div>
 
-          <div className="toggle-row">
-            <span className="toggle-label">🌿 {t("organic")}?</span>
-            <label style={{ display:"flex", alignItems:"center", gap:"0.5rem", cursor:"pointer" }}>
-              <input type="checkbox" checked={form.isOrganic} onChange={(e) => setForm(f=>({...f,isOrganic:e.target.checked}))} style={{ width:18,height:18 }} />
-              <span style={{ color:"var(--green-pale)", fontSize:"0.85rem" }}>{form.isOrganic ? "Yes, certified organic" : "No"}</span>
-            </label>
+          <div className="grid-2 mt-2">
+            <div className="toggle-row">
+              <span className="toggle-label">🌿 {t("organic")}?</span>
+              <label style={{ display:"flex", alignItems:"center", gap:"0.5rem", cursor:"pointer" }}>
+                <input type="checkbox" checked={form.isOrganic} onChange={(e) => setForm(f=>({...f,isOrganic:e.target.checked}))} style={{ width:18,height:18 }} />
+                <span style={{ color:"var(--green-pale)", fontSize:"0.85rem" }}>{form.isOrganic ? "Yes" : "No"}</span>
+              </label>
+            </div>
+            <div className="toggle-row">
+              <span className="toggle-label">📅 {t("isPrebooking")}?</span>
+              <label style={{ display:"flex", alignItems:"center", gap:"0.5rem", cursor:"pointer" }}>
+                <input type="checkbox" checked={form.isPrebooking} onChange={(e) => setForm(f=>({...f,isPrebooking:e.target.checked}))} style={{ width:18,height:18 }} />
+                <span style={{ color:"var(--green-pale)", fontSize:"0.85rem" }}>{form.isPrebooking ? "Yes, listed for pre-booking" : "No, already harvested"}</span>
+              </label>
+            </div>
           </div>
 
           <div className="form-group mt-2">
@@ -440,6 +523,30 @@ export default function FarmerDashboard() {
             {loading ? t("loading") : `🌾 List on Marketplace`}
           </button>
         </div>
+
+        {/* ── GUIDED FORM BOX ── */}
+        <div className="form-guide-box">
+          <h4 style={{ color: "var(--green-deep)", marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span>🧭</span> Form Guide
+            <button type="button" className="tts-btn" onClick={() => playTTS("This is the form guide. Follow the steps to list your crop.", lang)}>🔊</button>
+          </h4>
+          <div className={`guide-step ${focusField === "name" ? "active" : ""}`}>
+            <strong>Step 1: Crop Name</strong><br/>Enter the name of your crop (e.g. Tomato, Rice).
+          </div>
+          <div className={`guide-step ${focusField === "price" ? "active" : ""}`}>
+            <strong>Step 2: Pricing</strong><br/>Set a competitive price per unit in Rupees.
+          </div>
+          <div className={`guide-step ${focusField === "quantity" ? "active" : ""}`}>
+            <strong>Step 3: Quantity</strong><br/>How much stock do you have available right now?
+          </div>
+          <div className={`guide-step ${focusField === "location" ? "active" : ""}`}>
+            <strong>Step 4: Location</strong><br/>Allow auto-detect so agents can find your farm easily.
+          </div>
+          <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "1rem" }}>
+            💡 Tip: Click the 🔊 icon next to fields to hear them spoken aloud.
+          </p>
+        </div>
+        </div>
       )}
 
       {/* ── ML SUGGESTIONS TAB ── */}
@@ -447,27 +554,38 @@ export default function FarmerDashboard() {
         <div className="grid-2">
           <div className="ml-card">
             <h3 className="section-title">🌤️ {t("cropSuggest")}</h3>
-            <p style={{ color:"var(--green-pale)", fontSize:"0.82rem", marginBottom:"1rem" }}>Enter weather data for AI-powered crop recommendations.</p>
-            <div className="grid-3" style={{ gap:"0.75rem" }}>
-              {[
-                { k:"temp", l:t("temperature"), pl:"28" },
-                { k:"hum",  l:t("humidity"),    pl:"65" },
-                { k:"rain", l:t("rainfall"),     pl:"80" }
-              ].map(f => (
-                <div key={f.k} className="form-group">
-                  <label className="field-label">{f.l}</label>
-                  <div className="input-wrapper">
-                    <input className="rs-input" type="number" placeholder={f.pl} value={weather[f.k]} onChange={(e) => setWeather(w=>({...w,[f.k]:e.target.value}))} />
-                  </div>
+            <p style={{ color:"var(--green-pale)", fontSize:"0.82rem", marginBottom:"1rem" }}>Uses Real-Time Weather via Open-Meteo API.</p>
+            
+            {weatherLive ? (
+              <div className="grid-3 mb-2" style={{ gap:"0.75rem" }}>
+                <div className="stat-card" style={{ padding: "1rem" }}>
+                  <div className="stat-icon" style={{ fontSize: "1.5rem", width: "40px", height: "40px" }}>🌡️</div>
+                  <div className="stat-value" style={{ fontSize: "1.2rem" }}>{weatherLive.temp}°C</div>
+                  <div className="stat-label">Temp</div>
                 </div>
-              ))}
-            </div>
-            <button className="btn-primary mt-2" onClick={runCropSuggest} disabled={mlLoading}>
-              {mlLoading ? t("loading") : `🤖 ${t("analyze")}`}
+                <div className="stat-card" style={{ padding: "1rem" }}>
+                  <div className="stat-icon" style={{ fontSize: "1.5rem", width: "40px", height: "40px" }}>💧</div>
+                  <div className="stat-value" style={{ fontSize: "1.2rem" }}>{weatherLive.hum}%</div>
+                  <div className="stat-label">Humidity</div>
+                </div>
+                <div className="stat-card" style={{ padding: "1rem" }}>
+                  <div className="stat-icon" style={{ fontSize: "1.5rem", width: "40px", height: "40px" }}>🌧️</div>
+                  <div className="stat-value" style={{ fontSize: "1.2rem" }}>{weatherLive.rain}mm</div>
+                  <div className="stat-label">Rainfall</div>
+                </div>
+              </div>
+            ) : (
+              <button className="btn-secondary mb-2" onClick={fetchLiveWeather} disabled={mlLoading}>
+                {mlLoading ? t("detecting") : `📡 ${t("fetchWeather")}`}
+              </button>
+            )}
+
+            <button className="btn-primary mt-2" onClick={runCropSuggest} disabled={mlLoading || !weatherLive}>
+              {mlLoading ? t("loading") : `🤖 Analyze Weather & ${t("suggestCrop")}`}
             </button>
             {mlResult && !mlResult.error && (
               <div className="ml-result">
-                <p>🌾 <strong style={{ color:"var(--yellow-wheat)" }}>Recommended:</strong> {mlResult.recommended_crop}</p>
+                <p>🌾 <strong style={{ color:"var(--yellow-wheat)" }}>Recommended:</strong> {mlResult.recommended_crop} <button type="button" className="tts-btn" onClick={() => playTTS(`Recommended Crop is ${mlResult.recommended_crop}`, lang)}>🔊</button></p>
                 <p>📊 Confidence: {mlResult.confidence}%</p>
                 <p>🔄 Alternatives: {mlResult.alternatives?.join(", ")}</p>
               </div>
@@ -493,8 +611,10 @@ export default function FarmerDashboard() {
               onSpeak={() => startListening((val) => {
                 if (typeof val === "function") setTipsForm(f=>({...f,crop:val(f.crop)}));
                 else setTipsForm(f=>({...f,crop:val}));
-              })}
-              listening={listening} interim={interim} label="Crop Name" placeholder="e.g. Rice, Wheat..." fieldType="crop" />
+              }, { fieldId: "tipsCrop" })}
+              onFocus={() => setFocusField("tipsCrop")}
+              onTTS={() => playTTS(`Crop is ${tipsForm.crop}`, lang)}
+              listening={listening && activeField === "tipsCrop"} interim={interim} label="Crop Name" placeholder="e.g. Rice, Wheat..." fieldType="crop" />
             <div className="form-group">
               <label className="field-label">{t("soilType")}</label>
               <select className="rs-select" value={tipsForm.soil} onChange={(e) => setTipsForm(f=>({...f,soil:e.target.value}))}>
@@ -519,46 +639,5 @@ export default function FarmerDashboard() {
         </div>
       )}
     </div>
-  );
-}
-
-function DemandPanel() {
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-  const currentMonth = months[new Date().getMonth()];
-  const [month, setMonth] = useState(currentMonth);
-
-  const run = async () => {
-    setLoading(true);
-    try {
-      const res = await API.post("/ml/demand-predict", { month });
-      setResult(res.data);
-    } catch { setResult(null); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <>
-      <div className="form-group">
-        <label className="field-label">Month</label>
-        <select className="rs-select" value={month} onChange={(e) => setMonth(e.target.value)}>
-          {months.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </div>
-      <button className="btn-primary" onClick={run} disabled={loading}>
-        {loading ? "Analyzing..." : "🔍 Predict Demand"}
-      </button>
-      {Array.isArray(result) && (
-        <div className="ml-result">
-          {result.map((r,i) => (
-            <div key={i} style={{ marginBottom:"0.75rem", paddingBottom:"0.75rem", borderBottom: i < result.length-1 ? "1px solid rgba(82,183,136,0.15)" : "none" }}>
-              <p><strong style={{ color:"var(--yellow-wheat)" }}>#{i+1} {r.product}</strong> <span className={`badge ${r.trend==="Upward"?"badge-green":"badge-blue"}`}>{r.trend}</span></p>
-              <p style={{ fontSize:"0.8rem", marginTop:"0.2rem" }}>Score: {r.demand_score}/10 | Season: {r.season}</p>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
   );
 }

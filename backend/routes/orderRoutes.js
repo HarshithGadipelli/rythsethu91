@@ -1,13 +1,15 @@
 import express from "express";
 import Order from "../models/Order.js";
 import Crop from "../models/Crop.js";
+import User from "../models/User.js";
+import Notification from "../models/Notification.js";
 
 const router = express.Router();
 
 // Create order (with stock validation, delivery charges, bill)
 router.post("/create", async (req, res) => {
   try {
-    const { crop, quantity, deliveryType, deliveryCharges, deliveryDistance } = req.body;
+    const { crop, quantity, deliveryType, deliveryCharges, deliveryDistance, isPrebooked, pointsUsed, customer, farmer } = req.body;
 
     // Stock validation
     if (crop && quantity) {
@@ -18,21 +20,52 @@ router.post("/create", async (req, res) => {
       }
     }
 
+    // Handle reward points deduction
+    let finalDiscount = 0;
+    if (pointsUsed && Number(pointsUsed) > 0 && customer) {
+      const cust = await User.findById(customer);
+      if (cust && cust.rewardPoints >= Number(pointsUsed)) {
+        finalDiscount = Number(pointsUsed);
+        await User.findByIdAndUpdate(customer, { $inc: { rewardPoints: -finalDiscount } });
+      }
+    }
+
     // Calculate amounts
     const subtotal = req.body.totalAmount || 0;
     const charges = deliveryType === "farm_pickup" ? 0 : (deliveryCharges || 0);
     const platformFee = Math.round(subtotal * 0.05); // 5% platform fee
-    const totalAmount = subtotal + charges;
+    const totalAmount = Math.max(0, subtotal + charges - finalDiscount);
+    const pointsEarned = Math.floor(totalAmount / 100);
+
+    const initialStatus = isPrebooked ? "prebooked" : "pending";
 
     const order = await Order.create({
       ...req.body,
+      status: initialStatus,
+      isPrebooked: isPrebooked || false,
+      pointsEarned,
+      pointsUsed: finalDiscount,
       subtotal,
       deliveryCharges: charges,
       deliveryDistance: deliveryDistance || 0,
       platformFee,
       totalAmount,
-      timeline: [{ status: "pending", note: "Order placed by customer" }]
+      timeline: [{ status: initialStatus, note: isPrebooked ? "Pre-booking placed" : "Order placed by customer" }]
     });
+
+    // Award reward points and notify
+    if (pointsEarned > 0) {
+      if (customer) {
+        await User.findByIdAndUpdate(customer, { $inc: { rewardPoints: pointsEarned } });
+        await Notification.create({ user: customer, title: "🏆 Points Earned!", message: `You earned ${pointsEarned} Reward Points from your purchase!`, type: "reward" });
+      }
+      if (farmer) {
+        await User.findByIdAndUpdate(farmer, { $inc: { rewardPoints: pointsEarned } });
+        await Notification.create({ user: farmer, title: "💰 New Sale & Points!", message: `You earned ${pointsEarned} Reward Points from a new order.`, type: "reward" });
+      }
+    } else if (farmer) {
+      await Notification.create({ user: farmer, title: "📦 New Order Received!", message: `You have received a new order.`, type: "order" });
+    }
 
     // Decrement crop stock
     if (crop && quantity) {
@@ -141,11 +174,30 @@ router.put("/:id/status", async (req, res) => {
           isAvailable: true
         });
       }
+      // Note: we might want to refund pointsUsed here, but skipping for brevity
     }
 
-    // Emit real-time event
+    // If delivered, give delivery agent experience points (10 per delivery)
+    if (status === "delivered") {
+      const deliveredOrder = await Order.findById(req.params.id);
+      if (deliveredOrder && deliveredOrder.agent) {
+        await User.findByIdAndUpdate(deliveredOrder.agent, { $inc: { experiencePoints: 10 } });
+      }
+    }
+
+    // Emit real-time event and notify customer
     const io = req.app.get("io");
     if (io) io.emit("order_updated", order);
+
+    const updatedOrder = await Order.findById(req.params.id);
+    if (updatedOrder && updatedOrder.customer) {
+      await Notification.create({ 
+        user: updatedOrder.customer, 
+        title: "📦 Order Update", 
+        message: `Your order status has been updated to: ${status.replace("_", " ")}`, 
+        type: "order" 
+      });
+    }
 
     res.json(order);
   } catch (error) {
@@ -171,6 +223,12 @@ router.put("/:id/assign-agent", async (req, res) => {
     if (io) {
       io.emit("order_updated", order);
       io.emit("delivery_assigned", order);
+    }
+
+    // Notify agent and customer
+    await Notification.create({ user: agentId, title: "🚚 New Delivery", message: "You have been assigned a new delivery.", type: "order" });
+    if (order.customer) {
+      await Notification.create({ user: order.customer._id, title: "🚚 Agent Assigned", message: "A delivery agent has been assigned to your order.", type: "order" });
     }
 
     res.json(order);

@@ -9,7 +9,7 @@ export default function Login() {
   const { login } = useAuth();
   const { t, lang } = useLang();
   const navigate = useNavigate();
-  const { listening, startListening } = useVoiceInput(lang);
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang);
 
   const [form, setForm] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
@@ -19,7 +19,13 @@ export default function Login() {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const handleVoice = (field) => {
-    startListening((text) => setForm((f) => ({ ...f, [field]: text })));
+    startListening((val) => {
+      if (typeof val === "function") {
+        setForm((f) => ({ ...f, [field]: val(f[field]) }));
+      } else {
+        setForm((f) => ({ ...f, [field]: val }));
+      }
+    }, { fieldId: field });
   };
 
   const handleLogin = async () => {
@@ -67,13 +73,14 @@ export default function Login() {
                 className="rs-input"
                 type="email"
                 placeholder="you@example.com"
-                value={form.email}
+                value={listening && activeField === "email" && interim ? `${form.email} ${interim}...` : form.email}
                 onChange={set("email")}
                 autoComplete="email"
+                style={listening && activeField === "email" && interim ? { color: "rgba(183,228,199,0.7)", fontStyle: "italic" } : {}}
               />
               <button
                 type="button"
-                className={`mic-btn ${listening ? "active" : ""}`}
+                className={`mic-btn ${listening && activeField === "email" ? "active" : ""}`}
                 onClick={() => handleVoice("email")}
                 title="Speak email"
               >🎤</button>

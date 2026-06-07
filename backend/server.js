@@ -16,6 +16,9 @@ import deliveryRoutes from "./routes/deliveryRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import mlRoutes from "./routes/mlRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import aiRoutes from "./routes/aiRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
+import publicRoutes from "./routes/publicRoutes.js";
 
 dotenv.config();
 
@@ -58,6 +61,9 @@ app.use("/api/delivery", deliveryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/ml", mlRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/ai", aiRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/public", publicRoutes);
 
 app.get("/", (req, res) => {
   res.send("🌾 Rythu Sethu 4.0 Backend Running");

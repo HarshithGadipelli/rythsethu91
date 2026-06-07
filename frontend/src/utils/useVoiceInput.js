@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 
 export function useVoiceInput(lang = "en") {
   const [listening, setListening] = useState(false);
+  const [activeField, setActiveField] = useState(null);
   const [interim, setInterim] = useState("");
   const recognitionRef = useRef(null);
 
@@ -19,6 +20,7 @@ export function useVoiceInput(lang = "en") {
       recognitionRef.current = null;
     }
     setListening(false);
+    setActiveField(null);
     setInterim("");
   }, []);
 
@@ -33,6 +35,9 @@ export function useVoiceInput(lang = "en") {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
+
+    const fieldId = options.fieldId || "default";
+    setActiveField(fieldId);
 
     const recognition = new SpeechRecognition();
     recognition.lang = langMap[lang] || "en-IN";
@@ -49,12 +54,14 @@ export function useVoiceInput(lang = "en") {
 
     recognition.onend = () => {
       setListening(false);
+      setActiveField(null);
       setInterim("");
       recognitionRef.current = null;
     };
 
     recognition.onerror = (e) => {
       setListening(false);
+      setActiveField(null);
       setInterim("");
       recognitionRef.current = null;
       if (e.error === "not-allowed") {
@@ -96,6 +103,7 @@ export function useVoiceInput(lang = "en") {
         }
         setInterim("");
         setListening(false);
+        setActiveField(null);
       }
     };
 
@@ -104,8 +112,10 @@ export function useVoiceInput(lang = "en") {
     } catch (err) {
       console.warn("Failed to start speech recognition:", err);
       setListening(false);
+      setActiveField(null);
     }
   }, [lang]);
 
-  return { listening, interim, startListening, stopListening };
+  return { listening, activeField, interim, startListening, stopListening };
 }
+

@@ -23,7 +23,9 @@ export default function AgentDashboard() {
   const [filter, setFilter] = useState("all");
   const [msg, setMsg] = useState({ type:"", text:"" });
   const [search, setSearch] = useState("");
-  const { listening, interim, startListening } = useVoiceInput(lang || "en");
+  const [routeData, setRouteData] = useState(null);
+  const [optimizing, setOptimizing] = useState(false);
+  const { listening, activeField, interim, startListening } = useVoiceInput(lang || "en");
 
   useEffect(() => { 
     loadAll();
@@ -96,6 +98,24 @@ export default function AgentDashboard() {
     return idx < STATUS_STEPS.length - 1 ? STATUS_STEPS[idx + 1] : null;
   };
 
+  const optimizeRoute = async () => {
+    setOptimizing(true);
+    setMsg({ type: "info", text: "🗺️ Calculating optimal route using AI..." });
+    try {
+      const res = await API.post("/ml/route-optimize", { agentId: user?._id });
+      if (res.data.optimizedRoute && res.data.optimizedRoute.length > 0) {
+        setRouteData(res.data);
+        setMsg({ type: "success", text: `✅ Route optimized! Shortest path calculated.` });
+      } else {
+        setMsg({ type: "info", text: "Not enough active deliveries to optimize." });
+      }
+    } catch (err) {
+      setMsg({ type: "error", text: "Failed to optimize route." });
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
   const lowerSearch = search.toLowerCase();
   const filteredDeliveries = deliveries.filter(d => 
     d.trackingCode?.toLowerCase().includes(lowerSearch) || 
@@ -137,8 +157,8 @@ export default function AgentDashboard() {
                onSpeak={() => startListening((val) => {
                  if (typeof val === "function") setSearch(f=>val(f));
                  else setSearch(val);
-               }, { replace: true })}
-               listening={listening}
+               }, { replace: true, fieldId: "search" })}
+               listening={listening && activeField === "search"}
                interim={interim}
             />
           </div>
@@ -180,6 +200,33 @@ export default function AgentDashboard() {
           🆕 Available ({filteredAvailable.length})
         </button>
       </div>
+
+      {tab === "my" && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "1rem" }}>
+          <button className="btn-primary" onClick={optimizeRoute} disabled={optimizing || deliveries.filter(d=>d.status==="pending"||d.status==="accepted").length < 2} style={{ width:"100%" }}>
+            {optimizing ? `🔄 ${t("optimizing")}` : `🗺️ ${t("smartRoute")}`}
+          </button>
+        </div>
+      )}
+
+      {routeData && tab === "my" && (
+        <div className="glass-card mb-3" style={{ background:"var(--green-pale)", border:"1px solid var(--green-mid)" }}>
+            <h3 style={{ color:"var(--green-deep)", marginBottom:"0.5rem" }}>{t("routeGenerated")}</h3>
+            <p style={{ color:"var(--green-mid)", fontSize:"0.9rem", marginBottom:"1rem" }}>
+              {t("totalDistance")}: {parseFloat(routeData.totalDistance).toFixed(2)} km
+            </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center" }}>
+            {routeData.optimizedRoute.map((stop, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                <div style={{ background: "var(--gradient-btn)", color: "white", padding: "0.5rem 1rem", borderRadius: "8px", fontSize: "0.85rem", fontWeight: 600 }}>
+                  {i+1}. {stop.action} at {stop.location}
+                </div>
+                {i < routeData.optimizedRoute.length - 1 && <span style={{ color: "var(--green-pale)" }}>➡️</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── MY DELIVERIES ── */}
       {tab === "my" && (
