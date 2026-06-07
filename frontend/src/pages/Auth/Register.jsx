@@ -4,27 +4,18 @@ import API from "../../api/api";
 import { useAuth } from "../../context/AuthContext";
 import { useLang } from "../../context/LangContext";
 import { useVoiceInput } from "../../utils/useVoiceInput";
+import AutoSuggestInput from "../../components/AutoSuggestInput";
 
 const SOIL_TYPES = ["loamy", "clay", "sandy", "silt", "peat", "chalk", "other"];
 const LANGUAGES = [{ v: "en", l: "English" }, { v: "te", l: "తెలుగు" }, { v: "hi", l: "हिंदी" }];
-
-const VoiceInput = ({ value, onChange, onSpeak, listening, placeholder, type = "text", label }) => (
-  <div className="form-group">
-    <label className="field-label">{label}</label>
-    <div className="input-wrapper">
-      <input className="rs-input" type={type} placeholder={placeholder} value={value} onChange={onChange} />
-      <button type="button" className={`mic-btn ${listening ? "active" : ""}`} onClick={onSpeak} title="Speak">🎤</button>
-    </div>
-  </div>
-);
 
 export default function Register() {
   const { login } = useAuth();
   const { t, lang } = useLang();
   const navigate = useNavigate();
-  const { listening, startListening } = useVoiceInput(lang);
+  const { listening, interim, startListening } = useVoiceInput(lang);
 
-  const [step, setStep] = useState(1); // multi-step form
+  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [locLoading, setLocLoading] = useState(false);
@@ -32,17 +23,29 @@ export default function Register() {
   const [form, setForm] = useState({
     name: "", email: "", phone: "", password: "", confirmPass: "",
     role: "customer", language: "en", aadhaar: "",
-    // Location
     location: "", latitude: "", longitude: "",
-    // Farmer extras
     farmName: "", farmLocation: "", farmSize: "", soilType: "loamy", experience: "",
-    // Customer extras
     address: "", pincode: "", city: "", state: "",
+    adminSecret: ""
   });
 
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: typeof e === "string" ? e : e.target.value }));
+  const set = (k) => (val) => {
+    if (typeof val === "function") {
+      setForm((f) => ({ ...f, [k]: val(f[k]) }));
+    } else if (typeof val === "object" && val?.target) {
+      setForm((f) => ({ ...f, [k]: val.target.value }));
+    } else {
+      setForm((f) => ({ ...f, [k]: val }));
+    }
+  };
 
-  const speak = (field) => startListening((text) => setForm((f) => ({ ...f, [field]: text })));
+  const speak = (field) => startListening((val) => {
+    if (typeof val === "function") {
+      setForm((f) => ({ ...f, [field]: val(f[field]) }));
+    } else {
+      setForm((f) => ({ ...f, [field]: val }));
+    }
+  });
 
   const getLocation = () => {
     if (!navigator.geolocation) { alert("Geolocation not supported"); return; }
@@ -56,8 +59,8 @@ export default function Register() {
           location: d.display_name || `${coords.latitude}, ${coords.longitude}`,
           latitude: coords.latitude,
           longitude: coords.longitude,
-          city: d.address?.city || d.address?.town || d.address?.village || "",
-          state: d.address?.state || ""
+          city: d.address?.city || d.address?.town || d.address?.village || f.city,
+          state: d.address?.state || f.state
         }));
       } catch { 
         setForm((f) => ({ ...f, location: `${coords.latitude}, ${coords.longitude}`, latitude: coords.latitude, longitude: coords.longitude }));
@@ -65,11 +68,14 @@ export default function Register() {
     }, () => { alert("Could not get location"); setLocLoading(false); });
   };
 
+  const totalSteps = form.role === "farmer" ? 3 : 2;
+
   const handleRegister = async () => {
     setError("");
     if (!form.name || !form.email || !form.password) { setError("Name, email & password are required."); return; }
     if (form.password !== form.confirmPass) { setError("Passwords do not match."); return; }
     if (form.password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (form.role === "admin" && !form.adminSecret) { setError("Admin access code is required."); return; }
     setLoading(true);
     try {
       const payload = { ...form };
@@ -79,13 +85,12 @@ export default function Register() {
       const role = res.data.user.role;
       if (role === "farmer") navigate("/farmer");
       else if (role === "agent") navigate("/agent");
+      else if (role === "admin") navigate("/admin");
       else navigate("/marketplace");
     } catch (err) {
       setError(err.response?.data?.error || "Registration failed. Try again.");
     } finally { setLoading(false); }
   };
-
-
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
@@ -98,9 +103,9 @@ export default function Register() {
         <div className="glass-card">
           {/* Step indicator */}
           <div className="flex-between mb-3" style={{ fontSize: "0.8rem", color: "var(--green-pale)" }}>
-            <span>Step {step} of {form.role === "customer" ? 2 : 3}</span>
+            <span>Step {step} of {totalSteps}</span>
             <div style={{ display: "flex", gap: "0.4rem" }}>
-              {[1, 2, ...(form.role !== "customer" ? [3] : [])].map(s => (
+              {Array.from({ length: totalSteps }, (_, i) => i + 1).map(s => (
                 <div key={s} style={{
                   width: 28, height: 5, borderRadius: 3,
                   background: step >= s ? "var(--green-light)" : "rgba(82,183,136,0.2)"
@@ -116,28 +121,52 @@ export default function Register() {
             <>
               <h3 className="section-title">👤 Basic Information</h3>
 
-              <VoiceInput value={form.name} onChange={set("name")} onSpeak={() => speak("name")} listening={listening} label={t("name")} placeholder="e.g. Ravi Kumar" />
-              <VoiceInput value={form.email} onChange={set("email")} onSpeak={() => speak("email")} listening={listening} label={t("email")} type="email" placeholder="you@example.com" />
-              <VoiceInput value={form.phone} onChange={set("phone")} onSpeak={() => speak("phone")} listening={listening} label={t("phone")} type="tel" placeholder="+91 9876543210" />
+              <AutoSuggestInput value={form.name} onChange={set("name")} onSpeak={() => speak("name")} listening={listening} interim={interim} label={t("name")} placeholder="e.g. Ravi Kumar" fieldType="name" />
+              
+              <div className="form-group">
+                <label className="field-label">{t("email")}</label>
+                <div className="input-wrapper">
+                  <input className="rs-input" type="email" placeholder="you@example.com" value={form.email} onChange={set("email")} />
+                </div>
+              </div>
 
-              <VoiceInput value={form.password} onChange={set("password")} onSpeak={() => speak("password")} listening={listening} label={t("password")} type="password" placeholder="Min 6 characters" />
-              <VoiceInput value={form.confirmPass} onChange={set("confirmPass")} onSpeak={() => speak("confirmPass")} listening={listening} label="Confirm Password" type="password" placeholder="Repeat password" />
+              <div className="form-group">
+                <label className="field-label">{t("phone")}</label>
+                <div className="input-wrapper">
+                  <input className="rs-input" type="tel" placeholder="+91 9876543210" value={form.phone} onChange={set("phone")} />
+                </div>
+              </div>
 
-              {/* Role selector */}
+              <div className="form-group">
+                <label className="field-label">{t("password")}</label>
+                <div className="input-wrapper">
+                  <input className="rs-input" type="password" placeholder="Min 6 characters" value={form.password} onChange={set("password")} />
+                </div>
+              </div>
+              
+              <div className="form-group">
+                <label className="field-label">Confirm Password</label>
+                <div className="input-wrapper">
+                  <input className="rs-input" type="password" placeholder="Repeat password" value={form.confirmPass} onChange={set("confirmPass")} />
+                </div>
+              </div>
+
+              {/* Role selector — 4 roles */}
               <div className="form-group">
                 <label className="field-label">{t("role")}</label>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.6rem" }}>
                   {[
                     { v: "farmer", icon: "🌾", l: t("farmer") },
                     { v: "customer", icon: "🛒", l: t("customer") },
-                    { v: "agent", icon: "🚚", l: t("agent") }
+                    { v: "agent", icon: "🚚", l: "Delivery" },
+                    { v: "admin", icon: "🛡️", l: "Admin" }
                   ].map((r) => (
                     <button
                       key={r.v}
                       type="button"
                       onClick={() => setForm((f) => ({ ...f, role: r.v }))}
                       style={{
-                        padding: "0.85rem 0.5rem",
+                        padding: "0.75rem 0.3rem",
                         borderRadius: "var(--radius-md)",
                         border: form.role === r.v ? "2px solid var(--green-light)" : "1.5px solid rgba(82,183,136,0.25)",
                         background: form.role === r.v ? "rgba(82,183,136,0.2)" : "rgba(255,255,255,0.05)",
@@ -147,12 +176,25 @@ export default function Register() {
                         transition: "all 0.2s"
                       }}
                     >
-                      <div style={{ fontSize: "1.5rem" }}>{r.icon}</div>
-                      <div style={{ fontSize: "0.8rem", fontWeight: 600, marginTop: "0.3rem" }}>{r.l}</div>
+                      <div style={{ fontSize: "1.4rem" }}>{r.icon}</div>
+                      <div style={{ fontSize: "0.72rem", fontWeight: 600, marginTop: "0.25rem" }}>{r.l}</div>
                     </button>
                   ))}
                 </div>
               </div>
+
+              {/* Admin secret code */}
+              {form.role === "admin" && (
+                <div className="form-group">
+                  <label className="field-label">🔐 Admin Access Code</label>
+                  <div className="input-wrapper">
+                    <input className="rs-input" type="password" placeholder="Enter admin secret code" value={form.adminSecret} onChange={set("adminSecret")} />
+                  </div>
+                  <p style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginTop: "0.3rem" }}>
+                    Contact the platform administrator for the access code.
+                  </p>
+                </div>
+              )}
 
               {/* Language */}
               <div className="form-group">
@@ -189,18 +231,20 @@ export default function Register() {
                 )}
               </div>
 
-              <VoiceInput value={form.address} onChange={set("address")} onSpeak={() => speak("address")} listening={listening} label={t("address")} placeholder="Full address" />
+              <AutoSuggestInput value={form.address} onChange={set("address")} onSpeak={() => speak("address")} listening={listening} interim={interim} label={t("address")} placeholder="Full address" />
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                <VoiceInput value={form.pincode} onChange={set("pincode")} onSpeak={() => speak("pincode")} listening={listening} label="Pincode" placeholder="500001" />
-                <VoiceInput value={form.city} onChange={set("city")} onSpeak={() => speak("city")} listening={listening} label="City" placeholder="City" />
+                <AutoSuggestInput value={form.pincode} onChange={set("pincode")} onSpeak={() => speak("pincode")} listening={listening} interim={interim} label="Pincode" placeholder="500001" />
+                <AutoSuggestInput value={form.city} onChange={set("city")} onSpeak={() => speak("city")} listening={listening} interim={interim} label="City" placeholder="City" fieldType="city" />
               </div>
 
-              <VoiceInput value={form.aadhaar} onChange={set("aadhaar")} onSpeak={() => speak("aadhaar")} listening={listening} label={t("aadhaar")} placeholder="XXXX-XXXX-XXXX" />
+              <AutoSuggestInput value={form.state} onChange={set("state")} onSpeak={() => speak("state")} listening={listening} interim={interim} label="State" placeholder="State" fieldType="state" />
+
+              <AutoSuggestInput value={form.aadhaar} onChange={set("aadhaar")} onSpeak={() => speak("aadhaar")} listening={listening} interim={interim} label={t("aadhaar")} placeholder="XXXX-XXXX-XXXX" />
 
               <div style={{ display: "flex", gap: "0.75rem" }}>
                 <button className="btn-secondary" onClick={() => setStep(1)}>← Back</button>
-                {form.role === "customer" || form.role === "agent"
+                {form.role !== "farmer"
                   ? <button className="btn-primary" onClick={handleRegister} disabled={loading}>
                       {loading ? t("loading") : `✅ ${t("register")}`}
                     </button>
@@ -215,7 +259,7 @@ export default function Register() {
             <>
               <h3 className="section-title">🌾 Farm Details</h3>
 
-              <VoiceInput value={form.farmName} onChange={set("farmName")} onSpeak={() => speak("farmName")} listening={listening} label={t("farmName")} placeholder="e.g. Sri Rama Farms" />
+              <AutoSuggestInput value={form.farmName} onChange={set("farmName")} onSpeak={() => speak("farmName")} listening={listening} interim={interim} label={t("farmName")} placeholder="e.g. Sri Rama Farms" />
               
               <div className="form-group">
                 <label className="field-label">Farm Location</label>
@@ -243,8 +287,18 @@ export default function Register() {
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                <VoiceInput value={form.farmSize} onChange={set("farmSize")} onSpeak={() => speak("farmSize")} listening={listening} label={t("farmSize")} type="number" placeholder="e.g. 5" />
-                <VoiceInput value={form.experience} onChange={set("experience")} onSpeak={() => speak("experience")} listening={listening} label={t("experience")} type="number" placeholder="Years" />
+                <div className="form-group">
+                  <label className="field-label">{t("farmSize")} (acres)</label>
+                  <div className="input-wrapper">
+                    <input className="rs-input" type="number" placeholder="e.g. 5" value={form.farmSize} onChange={set("farmSize")} />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="field-label">{t("experience")} (years)</label>
+                  <div className="input-wrapper">
+                    <input className="rs-input" type="number" placeholder="Years" value={form.experience} onChange={set("experience")} />
+                  </div>
+                </div>
               </div>
 
               <div className="form-group">
@@ -254,7 +308,12 @@ export default function Register() {
                 </select>
               </div>
 
-              <div style={{ display: "flex", gap: "0.75rem" }}>
+              {/* Verification notice */}
+              <div className="alert alert-info" style={{ marginTop: "1rem" }}>
+                ℹ️ Your account will be reviewed by our admin team before you can list crops on the marketplace. This ensures trust and quality.
+              </div>
+
+              <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem" }}>
                 <button className="btn-secondary" onClick={() => setStep(2)}>← Back</button>
                 <button className="btn-primary" onClick={handleRegister} disabled={loading}>
                   {loading ? t("loading") : `🌾 ${t("register")}`}

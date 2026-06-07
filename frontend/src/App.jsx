@@ -28,6 +28,20 @@ function Protected({ children, roles }) {
 function AppRoutes() {
   return (
     <>
+      <div className="nature-bg-overlay">
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="firefly"></div>
+        <div className="leaf-petal"></div>
+        <div className="leaf-petal"></div>
+        <div className="leaf-petal"></div>
+        <div className="leaf-petal"></div>
+      </div>
       <Navbar />
       <Routes>
         <Route path="/"           element={<LandingPage />} />

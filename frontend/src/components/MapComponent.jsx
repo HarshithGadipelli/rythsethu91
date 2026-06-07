@@ -21,8 +21,8 @@ function MapComponent({ locations }) {
     <div style={{ height: "400px", width: "100%", borderRadius: "15px", overflow: "hidden", border: "1px solid var(--glass-border)" }}>
       <MapContainer center={center} zoom={5} style={{ height: "100%", width: "100%" }}>
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+          attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
         />
         {locations && locations.map((loc, idx) => (
           <Marker key={idx} position={[loc.lat, loc.lng]}>

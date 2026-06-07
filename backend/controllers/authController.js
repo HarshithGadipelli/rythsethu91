@@ -13,14 +13,25 @@ export const register = async (req, res) => {
       // Farmer extras
       farmName, farmLocation, farmSize, soilType, experience,
       // Customer extras
-      // Customer extras
-      address, pincode, city, state
+      address, pincode, city, state,
+      // Admin extras
+      adminSecret
     } = req.body;
 
-    console.log("Registering user:", email, role);
+    // Validate admin secret
+    if (role === "admin") {
+      const secret = process.env.ADMIN_SECRET || "RYTHUADMIN2026";
+      if (adminSecret !== secret) {
+        return res.status(403).json({ error: "Invalid admin access code. Contact the platform administrator." });
+      }
+    }
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: "Email already registered" });
+
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -29,10 +40,9 @@ export const register = async (req, res) => {
       role: role || "customer",
       location, latitude, longitude,
       language: language || "en",
-      aadhaar
+      aadhaar,
+      isVerified: role === "admin" || role === "customer" // Admin and customers auto-verified
     });
-
-    console.log("Created base user. Role:", user.role);
 
     // Create role-specific profile
     if (user.role === "farmer") {
@@ -51,21 +61,28 @@ export const register = async (req, res) => {
         address: address || location || "",
         pincode: pincode || "",
         city: city || "",
-        state: state || ""
+        state: state || "",
+        latitude, longitude
       });
     } else if (user.role === "agent") {
       await Agent.create({
         user: user._id,
-        vehicle: "To be confirmed",
+        vehicle: "bike",
         active: true
       });
     }
 
-    console.log("Creating token...");
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
-    console.log("Sending response...");
-    res.json({ token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
+    res.json({
+      token,
+      user: {
+        _id: user._id, name: user.name, email: user.email,
+        role: user.role, phone: user.phone, language: user.language,
+        location: user.location, latitude: user.latitude,
+        longitude: user.longitude, isVerified: user.isVerified
+      }
+    });
   } catch (error) {
     console.error("Register Error:", error);
     res.status(500).json({ error: error.message });
@@ -94,8 +111,9 @@ export const login = async (req, res) => {
       token,
       user: {
         _id: user._id, name: user.name, email: user.email,
-        role: user.role, language: user.language, location: user.location,
-        latitude: user.latitude, longitude: user.longitude, isVerified: user.isVerified
+        role: user.role, phone: user.phone, language: user.language,
+        location: user.location, latitude: user.latitude,
+        longitude: user.longitude, isVerified: user.isVerified
       },
       profile
     });
@@ -110,6 +128,7 @@ export const getProfile = async (req, res) => {
     let profile = null;
     if (user.role === "farmer") profile = await Farmer.findOne({ user: user._id });
     else if (user.role === "customer") profile = await Customer.findOne({ user: user._id });
+    else if (user.role === "agent") profile = await Agent.findOne({ user: user._id });
     res.json({ user, profile });
   } catch (error) {
     res.status(500).json({ error: error.message });
